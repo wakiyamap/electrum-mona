@@ -20,7 +20,9 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+import hashlib
 import os
+import sys
 import threading
 import time
 from typing import Optional, Dict, Mapping, Sequence, TYPE_CHECKING
@@ -33,6 +35,29 @@ from . import constants
 from .util import bfh, with_lock
 from .logging import Logger
 
+try:
+    import lyra2re2_hash
+except ImportError:
+    sys.exit("Error: could not find lyra2re2_hash. Please run 'python3 -m pip install lyra2re2-hash'")
+
+
+def _selftest_lyra2re2_hash() -> None:
+    """The C sources of lyra2re2_hash (sph BMW) break strict-aliasing rules, and recent
+    compilers miscompile them at -O2. That would silently reject every valid header,
+    so better to notice it right away. (test vector: mainnet header at height 2618875)
+    """
+    raw_header = bytes.fromhex(
+        "000000207ef097f85c42eae5e53551c95a30c336a86b3958e9b2c99a44a16b4a4e5efb90c31ab1ae"
+        "02f56e9391b2427f02f418410d864df97ff869d0ab6f03f0971960528a8f41620c6d041a88c2bf8b")
+    expected = "000000000000006985a7b5e5f5984542519975f07d9160457c3667eb44e44d74"
+    if lyra2re2_hash.getPoWHash(raw_header)[::-1].hex() != expected:
+        sys.exit("Error: lyra2re2_hash returns wrong hashes: it was miscompiled. Please rebuild it with:\n"
+                 "  CFLAGS=-fno-strict-aliasing python3 -m pip install --force-reinstall --no-cache-dir "
+                 "--no-binary lyra2re2_hash lyra2re2_hash")
+
+
+_selftest_lyra2re2_hash()
+
 if TYPE_CHECKING:
     from .simple_config import SimpleConfig
 
@@ -40,8 +65,13 @@ if TYPE_CHECKING:
 HEADER_SIZE = 80  # bytes
 CHUNK_SIZE = 2016  # num headers in a difficulty retarget period
 
-# see https://github.com/bitcoin/bitcoin/blob/feedb9c84e72e4fff489810a2bbeec09bcda5763/src/chainparams.cpp#L76
-MAX_TARGET = 0x00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff  # compact: 0x1d00ffff
+MAX_TARGET = 0x00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  # compact: 0x1e0fffff
+
+# Monacoin switched its proof-of-work from scrypt to Lyra2REv2 at this height,
+# and to the Dark Gravity Wave v3 difficulty adjustment 24 blocks later.
+LYRA2REV2_FORK_HEIGHT = 450000
+DGWV3_PAST_BLOCKS = 24
+DGWV3_TARGET_SPACING = 90  # seconds
 
 
 class MissingHeader(Exception):
@@ -92,7 +122,21 @@ def hash_raw_header(header: bytes) -> str:
     return hash_encode(sha256d(header))
 
 
-pow_hash_header = hash_header
+def _scrypt_1024_1_1_80(raw_header: bytes) -> bytes:
+    try:
+        return hashlib.scrypt(raw_header, salt=raw_header, n=1024, r=1, p=1, dklen=32)
+    except (AttributeError, ValueError):
+        # hashlib was built without scrypt support: fall back to (slow) pure python
+        from .scrypt import scrypt_1024_1_1_80
+        return scrypt_1024_1_1_80(raw_header)
+
+
+def pow_hash_header(header: dict) -> str:
+    """Hash that has to satisfy the target. Unlike in Bitcoin, this is not the block hash."""
+    raw_header = serialize_header(header)
+    if header['block_height'] < LYRA2REV2_FORK_HEIGHT:
+        return hash_encode(_scrypt_1024_1_1_80(raw_header))
+    return hash_encode(lyra2re2_hash.getPoWHash(raw_header))
 
 
 # block hash -> chain work; up to and including that block
@@ -371,6 +415,16 @@ class Blockchain(Logger):
             raise InvalidHeader("hash mismatches with expected: {} vs {}".format(expected_header_hash, _hash))
         if prev_hash != header.get('prev_block_hash'):
             raise InvalidHeader("prev hash mismatch: %s vs %s" % (prev_hash, header.get('prev_block_hash')))
+        # Checkpoints only store the target of the last header of each chunk, and DGWv3
+        # needs the previous 24 headers: the target of the other headers below the
+        # checkpoints, and of the first headers right above them, is not known.
+        # (those headers are still pinned by the hash chain up to the next checkpoint)
+        height = header['block_height']
+        num_cp_headers = len(constants.net.CHECKPOINTS) * CHUNK_SIZE
+        if height < num_cp_headers and (height + 1) % CHUNK_SIZE != 0:
+            return
+        if num_cp_headers <= height <= num_cp_headers + DGWV3_PAST_BLOCKS:
+            return
         if constants.net.TESTNET:
             return
         bits = cls.target_to_bits(target)
@@ -385,7 +439,7 @@ class Blockchain(Logger):
         num = len(data) // HEADER_SIZE
         start_height = index * CHUNK_SIZE
         prev_hash = self.get_hash(start_height - 1)
-        target = self.get_target(index-1)
+        headers = {}  # type: Dict[int, dict]
         for i in range(num):
             height = start_height + i
             try:
@@ -394,6 +448,8 @@ class Blockchain(Logger):
                 expected_header_hash = None
             raw_header = data[i*HEADER_SIZE : (i+1)*HEADER_SIZE]
             header = deserialize_header(raw_header, index*CHUNK_SIZE + i)
+            headers[height] = header
+            target = self.get_target(height, headers)
             self.verify_header(header, prev_hash, target, expected_header_hash)
             prev_hash = hash_header(header)
 
@@ -589,30 +645,70 @@ class Blockchain(Logger):
                 raise MissingHeader(height)
             return hash_header(header)
 
-    def get_target(self, index: int) -> int:
-        # compute target from chunk x, used in chunk x+1
+    def get_target(self, height: int, chain: Optional[Mapping[int, dict]] = None) -> int:
+        """Returns the target that the header at `height` has to satisfy.
+        `chain` can contain headers that are not saved yet (height -> header).
+        Returns 0 if the target is unknown/unchecked (see verify_header).
+        """
         if constants.net.TESTNET:
             return 0
-        if index == -1:
-            return MAX_TARGET
+        index = height // CHUNK_SIZE
         if index < len(self.checkpoints):
+            if (height + 1) % CHUNK_SIZE != 0:
+                return 0
             h, t = self.checkpoints[index]
             return t
-        # new target
-        first = self.read_header(index * CHUNK_SIZE)
-        last = self.read_header((index+1) * CHUNK_SIZE - 1)
-        if not first or not last:
-            raise MissingHeader()
-        bits = last.get('bits')
-        target = self.bits_to_target(bits)
-        nActualTimespan = last.get('timestamp') - first.get('timestamp')
-        nTargetTimespan = 14 * 24 * 60 * 60
-        nActualTimespan = max(nActualTimespan, nTargetTimespan // 4)
-        nActualTimespan = min(nActualTimespan, nTargetTimespan * 4)
-        new_target = min(MAX_TARGET, (target * nActualTimespan) // nTargetTimespan)
-        # not any target can be represented in 32 bits:
-        new_target = self.bits_to_target(self.target_to_bits(new_target))
-        return new_target
+        return self.get_target_dgwv3(height, chain)
+
+    def get_target_dgwv3(self, height: int, chain: Optional[Mapping[int, dict]] = None) -> int:
+        """Dark Gravity Wave v3, as in Monacoin Core (pow.cpp: DarkGravityWave3)."""
+        if chain is None:
+            chain = {}
+
+        def get_header(h: int) -> Optional[dict]:
+            header = chain.get(h)
+            if header is None:
+                header = self.read_header(h)
+            return header
+
+        # the headers right above the checkpoints do not have 24 predecessors on disk
+        if height < len(self.checkpoints) * CHUNK_SIZE + DGWV3_PAST_BLOCKS:
+            return 0
+        last = get_header(height - 1)
+        # thanks watanabe!! http://askmona.org/5288#res_61
+        if last is None or height - 1 < LYRA2REV2_FORK_HEIGHT + DGWV3_PAST_BLOCKS:
+            return MAX_TARGET
+
+        block_reading = last
+        actual_timespan = 0
+        last_block_time = 0
+        past_target_avg = 0
+        past_target_avg_prev = 0
+        count_blocks = 0
+        for _ in range(DGWV3_PAST_BLOCKS):
+            if block_reading is None:
+                raise MissingHeader()
+            count_blocks += 1
+            target = self.bits_to_target(block_reading['bits'])
+            if count_blocks == 1:
+                past_target_avg = target
+            else:
+                past_target_avg = (past_target_avg_prev * count_blocks + target) // (count_blocks + 1)
+            past_target_avg_prev = past_target_avg
+
+            if last_block_time > 0:
+                actual_timespan += last_block_time - block_reading['timestamp']
+            last_block_time = block_reading['timestamp']
+
+            block_reading = get_header(height - 1 - count_blocks)
+
+        target_timespan = count_blocks * DGWV3_TARGET_SPACING
+        actual_timespan = max(actual_timespan, target_timespan // 3)
+        actual_timespan = min(actual_timespan, target_timespan * 3)
+
+        # retarget
+        new_target = past_target_avg * actual_timespan // target_timespan
+        return min(new_target, MAX_TARGET)
 
     @classmethod
     def bits_to_target(cls, bits: int) -> int:
@@ -652,39 +748,17 @@ class Blockchain(Logger):
             bitsBase >>= 8
         return bitsN << 24 | bitsBase
 
-    def chainwork_of_header_at_height(self, height: int) -> int:
-        """work done by single header at given height"""
-        chunk_idx = height // CHUNK_SIZE - 1
-        target = self.get_target(chunk_idx)
-        work = ((2 ** 256 - target - 1) // (target + 1)) + 1
-        return work
-
     @with_lock
     def get_chainwork(self, height=None) -> int:
+        """Used to compare competing chains.
+
+        With DGWv3 every header has its own target, and the checkpoints do not
+        store those, so the real chainwork cannot be computed from what we have.
+        As before in Electrum-mona, chains are compared by their length instead.
+        """
         if height is None:
             height = max(0, self.height())
-        if constants.net.TESTNET:
-            # On testnet/regtest, difficulty works somewhat different.
-            # It's out of scope to properly implement that.
-            return height
-        last_retarget = height // CHUNK_SIZE * CHUNK_SIZE - 1
-        cached_height = last_retarget
-        while _CHAINWORK_CACHE.get(self.get_hash(cached_height)) is None:
-            if cached_height <= -1:
-                break
-            cached_height -= CHUNK_SIZE
-        assert cached_height >= -1, cached_height
-        running_total = _CHAINWORK_CACHE[self.get_hash(cached_height)]
-        while cached_height < last_retarget:
-            cached_height += CHUNK_SIZE
-            work_in_single_header = self.chainwork_of_header_at_height(cached_height)
-            work_in_chunk = CHUNK_SIZE * work_in_single_header
-            running_total += work_in_chunk
-            _CHAINWORK_CACHE[self.get_hash(cached_height)] = running_total
-        cached_height += CHUNK_SIZE
-        work_in_single_header = self.chainwork_of_header_at_height(cached_height)
-        work_in_last_partial_chunk = (height % CHUNK_SIZE + 1) * work_in_single_header
-        return running_total + work_in_last_partial_chunk
+        return height
 
     def can_connect(self, header: Optional[dict], *, check_height: bool = True) -> bool:
         if header is None:
@@ -701,7 +775,7 @@ class Blockchain(Logger):
         if prev_hash != header.get('prev_block_hash'):
             return False
         try:
-            target = self.get_target(height // CHUNK_SIZE - 1)
+            target = self.get_target(height, {height: header})
         except MissingHeader:
             return False
         try:
@@ -725,7 +799,11 @@ class Blockchain(Logger):
         cp = []
         n = self.height() // CHUNK_SIZE
         for index in range(n):
-            h = self.get_hash((index+1) * CHUNK_SIZE -1)
-            target = self.get_target(index)
+            if index < len(self.checkpoints):
+                h, target = self.checkpoints[index]
+            else:
+                h = self.get_hash((index+1) * CHUNK_SIZE - 1)
+                header = self.read_header((index+1) * CHUNK_SIZE - 1)
+                target = self.bits_to_target(header['bits'])
             cp.append((h, target))
         return cp

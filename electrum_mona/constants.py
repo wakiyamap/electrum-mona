@@ -56,9 +56,9 @@ def create_fallback_node_list(fallback_nodes_dict: dict[str, dict]) -> List[LNPe
     return fallback_nodes
 
 
-GIT_REPO_URL = "https://github.com/spesmilo/electrum"
-GIT_REPO_ISSUES_URL = "https://github.com/spesmilo/electrum/issues"
-RELEASE_NOTES_URL = "https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/RELEASE-NOTES"
+GIT_REPO_URL = "https://github.com/wakiyamap/electrum-mona"
+GIT_REPO_ISSUES_URL = "https://github.com/wakiyamap/electrum-mona/issues"
+RELEASE_NOTES_URL = "https://raw.githubusercontent.com/wakiyamap/electrum-mona/refs/heads/master/RELEASE-NOTES"
 BIP39_WALLET_FORMATS = read_json('bip39_wallet_formats.json')
 
 
@@ -69,6 +69,7 @@ class AbstractNet:
     WIF_PREFIX: int
     ADDRTYPE_P2PKH: int
     ADDRTYPE_P2SH: int
+    ADDRTYPE_P2SH_ALT: int  # legacy p2sh version byte, still accepted when parsing addresses
     SEGWIT_HRP: str
     BOLT11_HRP: str
     GENESIS: str
@@ -147,14 +148,14 @@ class BitcoinMainnet(AbstractNet):
 
     NET_NAME = "mainnet"
     TESTNET = False
-    WIF_PREFIX = 0x80
-    ADDRTYPE_P2PKH = 0
-    ADDRTYPE_P2SH = 5
-    SEGWIT_HRP = "bc"
+    WIF_PREFIX = 0xB0
+    ADDRTYPE_P2PKH = 50
+    ADDRTYPE_P2SH = 55
+    ADDRTYPE_P2SH_ALT = 5
+    SEGWIT_HRP = "mona"
     BOLT11_HRP = SEGWIT_HRP
-    GENESIS = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+    GENESIS = "ff9f1c0116d19de7c9963845e129f9ed1bfc0b376eb54fd7afa42e0d418c8bb6"
     DEFAULT_PORTS = {'t': '50001', 's': '50002'}
-    BLOCK_HEIGHT_FIRST_LIGHTNING_CHANNELS = 497000
 
     XPRV_HEADERS = {
         'standard':    0x0488ade4,  # xprv
@@ -172,12 +173,11 @@ class BitcoinMainnet(AbstractNet):
         'p2wsh':       0x02aa7ed3,  # Zpub
     }
     XPUB_HEADERS_INV = inv_dict(XPUB_HEADERS)
-    BIP44_COIN_TYPE = 0
+    BIP44_COIN_TYPE = 22
     LN_REALM_BYTE = 0
     LN_DNS_SEEDS = [
-        'nodes.lightning.directory.',
-        'lseed.bitcoinstats.com.',
-        'lseed.darosior.ninja',
+        'lnd.nodes.directory.',
+        'soa.lnd.nodes.directory.',
     ]
 
     @classmethod
@@ -191,10 +191,11 @@ class BitcoinTestnet(AbstractNet):
     TESTNET = True
     WIF_PREFIX = 0xef
     ADDRTYPE_P2PKH = 111
-    ADDRTYPE_P2SH = 196
-    SEGWIT_HRP = "tb"
+    ADDRTYPE_P2SH = 117
+    ADDRTYPE_P2SH_ALT = 196
+    SEGWIT_HRP = "tmona"
     BOLT11_HRP = SEGWIT_HRP
-    GENESIS = "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943"
+    GENESIS = "a2b106ceba3be0c6d097b2a6a6aacf9d638ba8258ae478158f449c321061e0b2"
     DEFAULT_PORTS = {'t': '51001', 's': '51002'}
 
     XPRV_HEADERS = {
@@ -215,9 +216,8 @@ class BitcoinTestnet(AbstractNet):
     XPUB_HEADERS_INV = inv_dict(XPUB_HEADERS)
     BIP44_COIN_TYPE = 1
     LN_REALM_BYTE = 1
-    LN_DNS_SEEDS = [  # TODO investigate this again
-        #'test.nodes.lightning.directory.',  # times out.
-        #'lseed.bitcoinstats.com.',  # ignores REALM byte and returns mainnet peers...
+    LN_DNS_SEEDS = [
+        'testlnd.nodes.directory.',
     ]
 
 
@@ -231,9 +231,9 @@ class BitcoinTestnet4(BitcoinTestnet):
 class BitcoinRegtest(BitcoinTestnet):
 
     NET_NAME = "regtest"
-    SEGWIT_HRP = "bcrt"
+    SEGWIT_HRP = "rmona"
     BOLT11_HRP = SEGWIT_HRP
-    GENESIS = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
+    GENESIS = "7543a69d7c2fcdb29a5ebec2fc064c074a35253b6f3072c8a749473aa590a29c"
     LN_DNS_SEEDS = []
 
 
@@ -243,7 +243,7 @@ class BitcoinSimnet(BitcoinTestnet):
     WIF_PREFIX = 0x64
     ADDRTYPE_P2PKH = 0x3f
     ADDRTYPE_P2SH = 0x7b
-    SEGWIT_HRP = "sb"
+    SEGWIT_HRP = "smona"
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "683e86bd5c6d110d91b94b97137ba6bfe02dbbdb8e3dff722a669b5d69d77af6"
     LN_DNS_SEEDS = []
@@ -252,7 +252,7 @@ class BitcoinSimnet(BitcoinTestnet):
 class BitcoinSignet(BitcoinTestnet):
 
     NET_NAME = "signet"
-    BOLT11_HRP = "tbs"
+    BOLT11_HRP = "tmonas"
     GENESIS = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6"
     LN_DNS_SEEDS = []
 

@@ -16,8 +16,16 @@ from electrum_mona.util import OldTaskGroup
 from electrum_mona.logging import Logger
 from electrum_mona.wallet import restore_wallet_from_text
 
+from .upstream_params import use_upstream_bitcoin_params
+
 if TYPE_CHECKING:
     from .test_lnpeer import MockLNWallet
+
+
+# The test vectors shared with upstream Electrum are Bitcoin vectors: run the test
+# suite with the upstream chain parameters. Monacoin specifics are tested separately,
+# with the real parameters. See tests/upstream_params.py.
+use_upstream_bitcoin_params()
 
 
 # Set this locally to make the test suite run faster.

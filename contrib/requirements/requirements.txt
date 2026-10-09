@@ -7,6 +7,7 @@ certifi>=2026.10.19
 jsonpatch
 electrum_ecc>=0.0.4,<0.1
 electrum_aionostr>=0.1.0,<0.2
+lyra2re2_hash>=1.1.2
 
 # Note that we also need the dnspython[DNSSEC] extra which pulls in cryptography,
 # but as that is not pure-python it cannot be listed in this file!
