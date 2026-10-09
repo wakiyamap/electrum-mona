@@ -3,7 +3,7 @@ import os
 
 # these are ~duplicated from run_electrum:
 is_bundle = getattr(sys, 'frozen', False)
-is_local = not is_bundle and os.path.exists(os.path.join(os.path.dirname(os.path.dirname(__file__)), "electrum.desktop"))
+is_local = not is_bundle and os.path.exists(os.path.join(os.path.dirname(os.path.dirname(__file__)), "electrum-mona.desktop"))
 
 # when running from source, on Windows, also search for DLLs in inner 'electrum_mona' folder
 if is_local and os.name == 'nt':  # fixme: duplicated between main script and __init__.py :(

@@ -194,7 +194,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.config = SimpleConfig({'electrum_path': self.electrum_path})
         self.config.NETWORK_OFFLINE = True
         shutil.copytree(os.path.join(os.path.dirname(__file__), "fiat_fx_data"), os.path.join(self.electrum_path, "cache"))
-        self.config.FX_EXCHANGE = "BitFinex"
+        self.config.FX_EXCHANGE = "CoinGecko"
         self.config.FX_CURRENCY = "EUR"
         self._default_default_timezone = electrum_mona.util.DEFAULT_TIMEZONE
         electrum_mona.util.DEFAULT_TIMEZONE = datetime.timezone.utc

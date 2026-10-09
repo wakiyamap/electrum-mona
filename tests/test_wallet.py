@@ -260,7 +260,7 @@ class TestHistoryExport(ElectrumTestCase):
         # prepare wallet with realistic history
         c = self.config
         c.NETWORK_OFFLINE = True
-        c.FX_EXCHANGE, c.FX_CURRENCY, c.FX_USE_EXCHANGE_RATE, c.FX_HISTORY_RATES = "BitFinex", "EUR", True, True
+        c.FX_EXCHANGE, c.FX_CURRENCY, c.FX_USE_EXCHANGE_RATE, c.FX_HISTORY_RATES = "CoinGecko", "EUR", True, True
         daemon = Daemon(config=c, listen_jsonrpc=False)
         test_wallet_name = "client_4_5_2_9dk_with_ln"  # has labels, local tx, ln tx
         wallet_path = self.get_wallet_file_path(test_wallet_name)

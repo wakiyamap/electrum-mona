@@ -35,6 +35,9 @@ CCY_PRECISIONS = {'BHD': 3, 'BIF': 0, 'BYR': 0, 'CLF': 4, 'CLP': 0,
                   'VUV': 0, 'XAF': 0, 'XAU': 4, 'XOF': 0, 'XPF': 0,
                   # Cryptocurrencies
                   'BTC': 8, 'LTC': 6, 'XRP': 4, 'ETH': 8,
+                  # Electrum-MONA: MONA itself, and the other non-fiat ccys listed in currencies.json
+                  'MONA': 8,
+                  'BCH': 8, 'BNB': 8, 'DAI': 8, 'EOS': 8, 'PAX': 8, 'USDC': 8, 'USDT': 8, 'XLM': 8,
                   }
 
 SPOT_RATE_REFRESH_TARGET = 150      # approx. every 2.5 minutes, try to refresh spot price
@@ -206,7 +209,7 @@ class ExchangeBase(Logger):
 
     def get_cached_spot_quote(self, ccy: str) -> Decimal:
         """Returns the cached exchange rate as a Decimal"""
-        if ccy == 'BTC':
+        if ccy == 'MONA':
             return Decimal(1)
         rate = self._quotes.get(ccy)
         if not rate:  # don't return 0 to prevent DivisionByZero exceptions
@@ -217,208 +220,57 @@ class ExchangeBase(Logger):
         return Decimal(rate)
 
 
-class Yadio(ExchangeBase):
-
-    async def get_currencies(self):
-        dicts = await self.get_json('api.yadio.io', '/currencies')
-        return list(dicts.keys())
-
-    async def get_rates(self, ccy: str) -> Mapping[str, Optional[Decimal]]:
-        json = await self.get_json('api.yadio.io', '/rate/%s/BTC' % ccy)
-        return {ccy: to_decimal(json['rate'])}
-
-
-class BitcoinAverage(ExchangeBase):
-    # note: historical rates used to be freely available
-    # but this is no longer the case. see #5188
+class Bittrex(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('apiv2.bitcoinaverage.com', '/indices/global/ticker/short')
-        return dict([(r.replace("BTC", ""), to_decimal(json[r]['last']))
-                     for r in json if r != 'timestamp'])
-
-
-class Bitcointoyou(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json = await self.get_json('bitcointoyou.com', "/API/ticker.aspx")
-        return {'BRL': to_decimal(json['ticker']['last'])}
-
-
-class BitcoinVenezuela(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json = await self.get_json('api.bitcoinvenezuela.com', '/')
-        rates = [(r, to_decimal(json['BTC'][r])) for r in json['BTC']
-                 if json['BTC'][r] is not None]  # Giving NULL for LTC
-        return dict(rates)
-
-    def history_ccys(self):
-        return ['ARS', 'EUR', 'USD', 'VEF']
-
-    async def request_history(self, ccy):
-        json = await self.get_json('api.bitcoinvenezuela.com', "/historical/index.php?coin=BTC")
-        return json[ccy + '_BTC']
+        json1 = await self.get_json('api.bittrex.com', '/v3/markets/MONA-BTC/ticker')
+        if ccy != "BTC":
+            json2 = await self.get_json('api.coingecko.com', '/api/v3/simple/price?ids=bitcoin&vs_currencies=%s' % ccy)
+            return {ccy: to_decimal(json1['lastTradeRate']) * to_decimal(json2['bitcoin'][ccy.lower()])}
+        return {ccy: to_decimal(json1['lastTradeRate'])}
 
 
 class Bitbank(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('public.bitbank.cc', '/btc_jpy/ticker')
-        return {'JPY': to_decimal(json['data']['last'])}
+        json = await self.get_json('public.bitbank.cc', '/mona_%s/ticker' % ccy.lower())
+        return {ccy: to_decimal(json['data']['last'])}
 
 
-class BitFinex(ExchangeBase):
-
-    async def get_currencies(self):
-        json = await self.get_json(
-            'api-pub.bitfinex.com',
-            f"/v2/conf/pub:list:pair:exchange")
-        pairs = [pair for pair in json[0]
-                 if len(pair) == 6 and pair[:3] == "BTC"]
-        return [pair[3:] for pair in pairs]
-
-    def history_ccys(self):
-        return CURRENCIES[self.name()]
+class bitFlyer(ExchangeBase):
 
     async def get_rates(self, ccy):
-        # ref https://docs.bitfinex.com/reference/rest-public-ticker
-        json = await self.get_json(
-            'api-pub.bitfinex.com',
-            f"/v2/ticker/tBTC{ccy}")
-        return {ccy: to_decimal(json[6])}
-
-    async def request_history(self, ccy):
-        # ref https://docs.bitfinex.com/reference/rest-public-candles
-        history = await self.get_json(
-            'api.bitfinex.com',
-            f"/v2/candles/trade:1D:tBTC{ccy}/hist?limit=10000")
-        return dict([(timestamp_to_datetime(h[0] // 1000, utc=True).strftime('%Y-%m-%d'), str(h[2]))
-                     for h in history])
+        json = await self.get_json('api.bitflyer.com', '/v1/ticker?product_code=MONA_%s' % ccy)
+        return {ccy: to_decimal(json['ltp'])}
 
 
-class BitFlyer(ExchangeBase):
+class bitrue(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('bitflyer.jp', '/api/echo/price')
-        return {'JPY': to_decimal(json['mid'])}
+        json = await self.get_json('www.bitrue.com/', '/api/v1/ticker/price?symbol=mona%s' % ccy.lower())
+        return {ccy: to_decimal(json['price'])}
 
 
-class BitPay(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json = await self.get_json('bitpay.com', '/api/rates')
-        return dict([(r['code'], to_decimal(r['rate'])) for r in json])
-
-
-class Bitso(ExchangeBase):
+class Coincheck(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('api.bitso.com', '/v2/ticker')
-        return {'MXN': to_decimal(json['last'])}
+        json = await self.get_json('coincheck.com', '/api/rate/mona_%s' % ccy.lower())
+        return {ccy: to_decimal(json['rate'])}
 
 
-class BitStamp(ExchangeBase):
-
-    async def get_currencies(self):
-        # ref https://www.bitstamp.net/api/#tag/Tickers/operation/GetCurrencyPairTickers
-        json = await self.get_json(
-            'www.bitstamp.net',
-            f"/api/v2/ticker/")
-        pairs = [ticker["pair"] for ticker in json]
-        pairs = [pair for pair in pairs
-                 if len(pair) == 7 and pair[:4] == "BTC/"]
-        return [pair[4:] for pair in pairs]
+class CoinEx(ExchangeBase):
 
     async def get_rates(self, ccy):
-        # ref https://www.bitstamp.net/api/#tag/Tickers/operation/GetMarketTicker
-        if ccy in CURRENCIES[self.name()]:
-            json = await self.get_json('www.bitstamp.net', f'/api/v2/ticker/btc{ccy.lower()}/')
-            return {ccy: to_decimal(json['last'])}
-        return {}
-
-    def history_ccys(self):
-        return CURRENCIES[self.name()]
-
-    async def request_history(self, ccy):
-        # ref https://www.bitstamp.net/api/#tag/Market-info/operation/GetOHLCData
-        merged_history = {}
-        history_starts = 1313625600  # for BTCUSD pair (probably earliest)
-        items_per_request = 1000
-        step = 86400
-
-        async def populate_history(endtime: int):
-            history = await self.get_json(
-                'www.bitstamp.net',
-                f"/api/v2/ohlc/btc{ccy.lower()}/?step={step}&limit={items_per_request}&end={endtime}")
-            history = dict([
-                (timestamp_to_datetime(int(h["timestamp"]), utc=True).strftime('%Y-%m-%d'), str(h["close"]))
-                for h in history["data"]["ohlc"]])
-            merged_history.update(history)
-
-        async with OldTaskGroup() as group:
-            endtime = int(time.time())
-            while True:
-                if endtime < history_starts:
-                    break
-                await group.spawn(populate_history(endtime=endtime))
-                endtime = endtime - items_per_request * step
-        return merged_history
-
-
-class Bitvalor(ExchangeBase):
-
-    async def get_rates(self,ccy):
-        json = await self.get_json('api.bitvalor.com', '/v1/ticker.json')
-        return {'BRL': to_decimal(json['ticker_1h']['total']['last'])}
-
-
-class BlockchainInfo(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json = await self.get_json('blockchain.info', '/ticker')
-        return dict([(r, to_decimal(json[r]['15m'])) for r in json])
-
-
-class Bylls(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json = await self.get_json('bylls.com', '/api/price?from_currency=BTC&to_currency=CAD')
-        return {'CAD': to_decimal(json['public_price']['to_price'])}
-
-
-class Coinbase(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json = await self.get_json('api.coinbase.com',
-                             '/v2/exchange-rates?currency=BTC')
-        return {ccy: to_decimal(rate) for (ccy, rate) in json["data"]["rates"].items()}
-
-
-class CoinCap(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json = await self.get_json('api.coincap.io', '/v2/rates/bitcoin/')
-        return {'USD': to_decimal(json['data']['rateUsd'])}
-
-    def history_ccys(self):
-        return ['USD']
-
-    async def request_history(self, ccy):
-        # Currently 2000 days is the maximum in 1 API call
-        # (and history starts on 2017-03-23)
-        history = await self.get_json('api.coincap.io',
-                                      '/v2/assets/bitcoin/history?interval=d1&limit=2000')
-        return dict([(timestamp_to_datetime(h['time']/1000, utc=True).strftime('%Y-%m-%d'), str(h['priceUsd']))
-                     for h in history['data']])
+        json = await self.get_json('api.coinex.com', '/v1/market/ticker?market=mona%s' % ccy.lower())
+        return {ccy: to_decimal(json['data']['ticker']['last'])}
 
 
 class CoinGecko(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('api.coingecko.com', '/api/v3/exchange_rates')
-        return dict([(ccy.upper(), to_decimal(d['value']))
-                     for ccy, d in json['rates'].items() if d.get('value') is not None])
+        json = await self.get_json('api.coingecko.com',
+                                   '/api/v3/simple/price?ids=monacoin&vs_currencies=%s' % ccy)
+        return {ccy: to_decimal(json['monacoin'][ccy.lower()])}
 
     def history_ccys(self):
         # CoinGecko seems to have historical data for all ccys it supports
@@ -431,113 +283,51 @@ class CoinGecko(ExchangeBase):
         # > Your request exceeds the allowed time range. Public API users are limited to querying
         # > historical data within the past 365 days. Upgrade to a paid plan to enjoy full historical data access
         history = await self.get_json('api.coingecko.com',
-                                      f"/api/v3/coins/bitcoin/market_chart?vs_currency={ccy}&days={num_days}")
+                                      f"/api/v3/coins/monacoin/market_chart?vs_currency={ccy}&days={num_days}")
 
         return dict([(timestamp_to_datetime(h[0]/1000, utc=True).strftime('%Y-%m-%d'), str(h[1]))
                      for h in history['prices']])
 
 
-class Bit2C(ExchangeBase):
+class DoveWallet(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('bit2c.co.il', '/Exchanges/BtcNis/Ticker.json')
-        return {'ILS': to_decimal(json['ll'])}
-
-    def history_ccys(self):
-        return CURRENCIES[self.name()]
-
-    async def request_history(self, ccy):
-        history = await self.get_json('bit2c.co.il',
-                                      '/Exchanges/BtcNis/KLines?resolution=1D&from=1357034400&to=%s' % int(time.time()))
-
-        return dict([(timestamp_to_datetime(h[0], utc=True).strftime('%Y-%m-%d'), str(h[6]))
-                     for h in history])
+        json = await self.get_json('api.dovewallet.com', '/v1.1/public/getticker?market=%s-mona' % ccy)
+        return {ccy: to_decimal(json['result']['Last'])}
 
 
-class CointraderMonitor(ExchangeBase):
+class Finexbox(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('cointradermonitor.com', '/api/pbb/v1/ticker')
-        return {'BRL': to_decimal(json['last'])}
+        json = await self.get_json('xapi.finexbox.com', '/v1/ticker?market=mona_btc')
+        return {'BTC': to_decimal(json['result']['price'])}
 
 
-class itBit(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        ccys = ['USD', 'EUR', 'SGD']
-        json = await self.get_json('api.itbit.com', '/v1/markets/XBT%s/ticker' % ccy)
-        result = dict.fromkeys(ccys)
-        if ccy in ccys:
-            result[ccy] = to_decimal(json['lastPrice'])
-        return result
-
-
-class Kraken(ExchangeBase):
+class NebliDex(ExchangeBase):
 
     async def get_rates(self, ccy):
-        # ref https://docs.kraken.com/api/docs/rest-api/get-ticker-information
-        ccys = ['EUR', 'USD', 'CAD', 'GBP', 'JPY']
-        pairs = ['XBT%s' % c for c in ccys]
-        json = await self.get_json('api.kraken.com',
-                             '/0/public/Ticker?pair=%s' % ','.join(pairs))
-        return dict((k[-3:], to_decimal(v['c'][0]))
-                     for k, v in json['result'].items())
-
-    # async def request_history(self, ccy):
-    #     # ref https://docs.kraken.com/api/docs/rest-api/get-ohlc-data
-    #     pass  # limited to last 720 steps (step can by 1 day / 7 days / 15 days)
+        json = await self.get_json('www.neblidex.xyz', '/seed/?v=1&api=get_market_price&market=MONA/%s' % ccy)
+        return {ccy: to_decimal(json)}
 
 
-class MercadoBitcoin(ExchangeBase):
+class VALR(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('api.bitvalor.com', '/v1/ticker.json')
-        return {'BRL': to_decimal(json['ticker_1h']['exchanges']['MBT']['last'])}
+        json = await self.get_json('api.valr.com', '/v1/public/MONABTC/marketsummary')
+        return {'BTC': to_decimal(json['lastTradedPrice'])}
 
 
-class Winkdex(ExchangeBase):
+class VCCExchange(ExchangeBase):
 
     async def get_rates(self, ccy):
-        json = await self.get_json('winkdex.com', '/api/v0/price')
-        return {'USD': to_decimal(json['price']) / 100}
-
-    def history_ccys(self):
-        return ['USD']
-
-    async def request_history(self, ccy):
-        json = await self.get_json('winkdex.com',
-                             "/api/v0/series?start_time=1342915200")
-        history = json['series'][0]['results']
-        return dict([(h['timestamp'][:10], str(to_decimal(h['price']) / 100))
-                     for h in history])
+        json = await self.get_json('vcc.exchange', '/api/v1/price-scope?lang=en&currency=btc&coin=mona')
+        return {'BTC': to_decimal(json['data']['current_price'])}
 
 
 class Zaif(ExchangeBase):
     async def get_rates(self, ccy):
-        json = await self.get_json('api.zaif.jp', '/api/1/last_price/btc_jpy')
-        return {'JPY': to_decimal(json['last_price'])}
-
-
-class Bitragem(ExchangeBase):
-
-    async def get_rates(self,ccy):
-        json = await self.get_json('api.bitragem.com', '/v1/index?asset=BTC&market=BRL')
-        return {'BRL': to_decimal(json['response']['index'])}
-
-
-class Biscoint(ExchangeBase):
-
-    async def get_rates(self,ccy):
-        json = await self.get_json('api.biscoint.io', '/v1/ticker?base=BTC&quote=BRL')
-        return {'BRL': to_decimal(json['data']['last'])}
-
-
-class Walltime(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json = await self.get_json('s3.amazonaws.com',
-                             '/data-production-walltime-info/production/dynamic/walltime-info.json')
-        return {'BRL': to_decimal(json['BRL_XBT']['last_inexact'])}
+        json = await self.get_json('api.zaif.jp', '/api/1/last_price/mona_%s' % ccy.lower())
+        return {ccy: to_decimal(json['last_price'])}
 
 
 def dictinvert(d):

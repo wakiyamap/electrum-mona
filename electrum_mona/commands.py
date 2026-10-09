@@ -412,7 +412,7 @@ class Commands(Logger):
             raise UserFacingException(
                 "error: RPC server settings cannot be changed for already running daemon. "
                 "Stop the daemon first, and run 'setconfig' in --offline mode. "
-                "\nFor example: '$ electrum -o setconfig rpcport 7777'."
+                "\nFor example: '$ electrum-mona -o setconfig rpcport 7777'."
             )
         if Plugins.is_plugin_enabler_config_key(key):
             self.config.set_key(key, value)
@@ -479,7 +479,7 @@ class Commands(Logger):
         Return the transaction history of any address. Note: This is a
         walletless server query, results are not checked by SPV.
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         sh = bitcoin.address_to_scripthash(address)
         return await self.network.get_history_for_scripthash(sh)
@@ -507,7 +507,7 @@ class Commands(Logger):
         Returns the UTXO list of any address. Note: This
         is a walletless server query, results are not checked by SPV.
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         sh = bitcoin.address_to_scripthash(address)
         return await self.network.listunspent_for_scripthash(sh)
@@ -650,7 +650,7 @@ class Commands(Logger):
         """
         Freeze address. Freeze the funds at one of your wallet\'s addresses
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         return wallet.set_frozen_state_of_addresses([address], True)
 
@@ -659,7 +659,7 @@ class Commands(Logger):
         """
         Unfreeze address. Unfreeze the funds at one of your wallet\'s address
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         return wallet.set_frozen_state_of_addresses([address], False)
 
@@ -687,7 +687,7 @@ class Commands(Logger):
         """
         Get private keys of addresses. You may pass a single wallet address, or a list of wallet addresses.
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         if isinstance(address, str):
             address = address.strip()
@@ -709,20 +709,20 @@ class Commands(Logger):
         """
         Check if address is in wallet. Return true if and only address is in wallet
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         return wallet.is_mine(address)
 
     @command('')
     async def dumpprivkeys(self):
         """Deprecated."""
-        return "This command is deprecated. Use a pipe instead: 'electrum listaddresses | electrum getprivatekeys - '"
+        return "This command is deprecated. Use a pipe instead: 'electrum-mona listaddresses | electrum-mona getprivatekeys - '"
 
     @command('')
     async def validateaddress(self, address):
         """Check that an address is valid.
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         return is_address(address)
 
@@ -731,7 +731,7 @@ class Commands(Logger):
         """
         Return the public keys for a wallet address.
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         return wallet.get_public_keys(address)
 
@@ -755,7 +755,7 @@ class Commands(Logger):
         Return the balance of any address. Note: This is a walletless
         server query, results are not checked by SPV.
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         """
         sh = bitcoin.address_to_scripthash(address)
         out = await self.network.get_balance_for_scripthash(sh)
@@ -892,8 +892,8 @@ class Commands(Logger):
         privkey to a destination address. The transaction will not be broadcast.
 
         arg:str:privkey:Private key. Type \'?\' to get a prompt.
-        arg:str:destination:Bitcoin address, contact or alias
-        arg:decimal:fee:Transaction fee (absolute, in BTC)
+        arg:str:destination:Monacoin address, contact or alias
+        arg:decimal:fee:Transaction fee (absolute, in MONA)
         arg:decimal:feerate:Transaction fee rate (in sat/vbyte)
         arg:int:imax:Maximum number of inputs
         """
@@ -915,7 +915,7 @@ class Commands(Logger):
         """Sign a message with a key. Use quotes if your message contains
         whitespaces
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         arg:str:message:Clear text message. Use quotes if it contains spaces.
         """
         if not isinstance(address, str):
@@ -934,7 +934,7 @@ class Commands(Logger):
     async def verifymessage(self, address, signature, message):
         """Verify a signature.
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         arg:str:message:Clear text message. Use quotes if it contains spaces.
         arg:str:signature:The signature, base64-encoded.
         """
@@ -969,9 +969,9 @@ class Commands(Logger):
                     unsigned=False, rbf=True, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
         """Create an on-chain transaction.
 
-        arg:str:destination:Bitcoin address, contact or alias
-        arg:decimal_or_max:amount:Amount to be sent (in BTC). Type '!' to send the maximum available.
-        arg:decimal:fee:Transaction fee (absolute, in BTC)
+        arg:str:destination:Monacoin address, contact or alias
+        arg:decimal_or_max:amount:Amount to be sent (in MONA). Type '!' to send the maximum available.
+        arg:decimal:fee:Transaction fee (absolute, in MONA)
         arg:decimal:feerate:Transaction fee rate (in sat/vbyte)
         arg:str:from_addr:Source address (must be a wallet address; use sweep to spend from non-wallet address)
         arg:str:change_addr:Change address. Default is a spare address, or the source address if it's not in the wallet
@@ -1001,9 +1001,9 @@ class Commands(Logger):
                         unsigned=False, rbf=True, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
         """Create a multi-output transaction.
 
-        arg:json:outputs:json list of ["address", "amount in BTC"]
+        arg:json:outputs:json list of ["address", "amount in MONA"]
         arg:bool:rbf:Whether to signal opt-in Replace-By-Fee in the transaction (true/false)
-        arg:decimal:fee:Transaction fee (absolute, in BTC)
+        arg:decimal:fee:Transaction fee (absolute, in MONA)
         arg:decimal:feerate:Transaction fee rate (in sat/vbyte)
         arg:str:from_addr:Source address (must be a wallet address; use sweep to spend from non-wallet address)
         arg:str:change_addr:Change address. Default is a spare address, or the source address if it's not in the wallet
@@ -1605,7 +1605,7 @@ class Commands(Logger):
         Watch an address. Every time the address changes, a http POST is sent to the URL.
         Call with an empty URL to stop watching an address.
 
-        arg:str:address:Bitcoin address
+        arg:str:address:Monacoin address
         arg:str:URL:The callback URL
         """
         if not hasattr(self, "_notifier"):
@@ -1766,8 +1766,8 @@ class Commands(Logger):
         Open a lightning channel with a peer
 
         arg:str:connection_string:Lightning network node ID or network address
-        arg:decimal_or_max:amount:funding amount (in BTC)
-        arg:decimal:push_amount:Push initial amount (in BTC)
+        arg:decimal_or_max:amount:funding amount (in MONA)
+        arg:decimal:push_amount:Push initial amount (in MONA)
         arg:bool:public:The channel will be announced
         arg:bool:zeroconf:request zeroconf channel
         """
@@ -2088,7 +2088,7 @@ class Commands(Logger):
 
         arg:str:from_scid:Short channel ID
         arg:str:dest_scid:Short channel ID
-        arg:decimal:amount:Amount (in BTC)
+        arg:decimal:amount:Amount (in MONA)
 
         """
         from .lnutil import ShortChannelID
@@ -2139,8 +2139,8 @@ class Commands(Logger):
         Normal submarine swap: send on-chain BTC, receive on Lightning.
         Note: fees can change between the dryrun and the following swap request, causing the request to error and require a new dryrun.
 
-        arg:decimal_or_dryrun:lightning_amount:Amount to be received, in BTC. Set it to 'dryrun' to receive a value
-        arg:decimal_or_dryrun:onchain_amount:Amount to be sent, in BTC. Set it to 'dryrun' to receive a value
+        arg:decimal_or_dryrun:lightning_amount:Amount to be received, in MONA. Set it to 'dryrun' to receive a value
+        arg:decimal_or_dryrun:onchain_amount:Amount to be sent, in MONA. Set it to 'dryrun' to receive a value
         """
         sm = wallet.lnworker.swap_manager
         assert self.config.SWAPSERVER_NPUB or self.config.SWAPSERVER_URL, \
@@ -2189,8 +2189,8 @@ class Commands(Logger):
         Reverse submarine swap: send on Lightning, receive on-chain.
         Note: fees can change between the dryrun and the following swap request, causing the request to error and require a new dryrun.
 
-        arg:decimal_or_dryrun:lightning_amount:Amount to be sent, in BTC. Set it to 'dryrun' to receive a value
-        arg:decimal_or_dryrun:onchain_amount:Amount to be received, in BTC. Set it to 'dryrun' to receive a value
+        arg:decimal_or_dryrun:lightning_amount:Amount to be sent, in MONA. Set it to 'dryrun' to receive a value
+        arg:decimal_or_dryrun:onchain_amount:Amount to be received, in MONA. Set it to 'dryrun' to receive a value
         arg:decimal_or_dryrun:prepayment:Lightning payment required by the swap provider in order to cover their mining fees. This is included in lightning_amount. However, this part of the operation is not trustless; the provider is trusted to fail this payment if the swap fails.
         """
         sm = wallet.lnworker.swap_manager
@@ -2249,15 +2249,15 @@ class Commands(Logger):
         arg:str:to_ccy:Currency to convert to
         """
         if not self.daemon.fx.is_enabled():
-            raise UserFacingException("FX is disabled. To enable, run: 'electrum setconfig use_exchange_rate true'")
+            raise UserFacingException("FX is disabled. To enable, run: 'electrum-mona setconfig use_exchange_rate true'")
         # Currency codes are uppercase
         from_ccy = from_ccy.upper()
         to_ccy = to_ccy.upper()
         # Default currencies
         if from_ccy == '':
-            from_ccy = "BTC" if to_ccy != "BTC" else self.daemon.fx.ccy
+            from_ccy = "MONA" if to_ccy != "MONA" else self.daemon.fx.ccy
         if to_ccy == '':
-            to_ccy = "BTC" if from_ccy != "BTC" else self.daemon.fx.ccy
+            to_ccy = "MONA" if from_ccy != "MONA" else self.daemon.fx.ccy
         # Get current rates
         rate_from = self.daemon.fx.exchange.get_cached_spot_quote(from_ccy)
         rate_to = self.daemon.fx.exchange.get_cached_spot_quote(to_ccy)
@@ -2407,10 +2407,10 @@ config_variables = {
     'addrequest': {
         'ssl_privkey': 'Path to your SSL private key, needed to sign the request.',
         'ssl_chain': 'Chain of SSL certificates, needed for signed requests. Put your certificate at the top and the root CA at the end',
-        'url_rewrite': 'Parameters passed to str.replace(), in order to create the r= part of bitcoin: URIs. Example: \"(\'file:///var/www/\',\'https://electrum.org/\')\"',
+        'url_rewrite': 'Parameters passed to str.replace(), in order to create the r= part of monacoin: URIs. Example: \"(\'file:///var/www/\',\'https://electrum-mona.org/\')\"',
     },
     'listrequests': {
-        'url_rewrite': 'Parameters passed to str.replace(), in order to create the r= part of bitcoin: URIs. Example: \"(\'file:///var/www/\',\'https://electrum.org/\')\"',
+        'url_rewrite': 'Parameters passed to str.replace(), in order to create the r= part of monacoin: URIs. Example: \"(\'file:///var/www/\',\'https://electrum-mona.org/\')\"',
     }
 }
 
@@ -2505,13 +2505,13 @@ def add_global_options(parser, suppress=False):
         help=argparse.SUPPRESS if suppress else "Set verbosity (log levels)")
     group.add_argument(
         "-D", "--dir", dest="electrum_path",
-        help=argparse.SUPPRESS if suppress else "electrum directory")
+        help=argparse.SUPPRESS if suppress else "electrum-mona directory")
     group.add_argument(
         "-w", "--wallet", dest="wallet_path",
         help=argparse.SUPPRESS if suppress else "wallet path")
     group.add_argument(
         "-P", "--portable", action="store_true", dest="portable", default=False,
-        help=argparse.SUPPRESS if suppress else "Use local 'electrum_data' directory")
+        help=argparse.SUPPRESS if suppress else "Use local 'electrum-mona_data' directory")
     for chain in constants.NETS_LIST:
         group.add_argument(
             f"--{chain.cli_flag()}", action="store_true", dest=chain.config_key(), default=False,
@@ -2548,8 +2548,8 @@ def get_simple_parser():
                     largs.append(e.opt_str)
 
     parser = PassThroughOptionParser()
-    parser.add_option("-D", "--dir", dest="electrum_path", help="electrum directory")
-    parser.add_option("-P", "--portable", action="store_true", dest="portable", default=False, help="Use local 'electrum_data' directory")
+    parser.add_option("-D", "--dir", dest="electrum_path", help="electrum-mona directory")
+    parser.add_option("-P", "--portable", action="store_true", dest="portable", default=False, help="Use local 'electrum-mona_data' directory")
     for chain in constants.NETS_LIST:
         parser.add_option(f"--{chain.cli_flag()}", action="store_true", dest=chain.config_key(), default=False, help=f"Use {chain.NET_NAME} chain")
     return parser
@@ -2558,7 +2558,7 @@ def get_simple_parser():
 def get_parser():
     # create main parser
     parser = argparse.ArgumentParser(
-        epilog="Run 'electrum help <command>' to see the help for a command")
+        epilog="Run 'electrum-mona help <command>' to see the help for a command")
     parser.add_argument("--version", dest="cmd", action='store_const', const='version', help="Return the version of Electrum.")
     add_global_options(parser)
     subparsers = parser.add_subparsers(dest='cmd', metavar='<command>')
@@ -2591,7 +2591,7 @@ def get_parser():
             description=cmd.description,
             help=cmd.short_description,
             formatter_class=argparse.RawDescriptionHelpFormatter,
-            epilog="Run 'electrum -h' to see the list of global options",
+            epilog="Run 'electrum-mona -h' to see the list of global options",
         )
         for optname, default in zip(cmd.options, cmd.defaults):
             if optname in ['wallet_path', 'wallet', 'plugin']:

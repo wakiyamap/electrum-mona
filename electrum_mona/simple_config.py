@@ -243,7 +243,7 @@ class SimpleConfig(Logger):
         # ~hack for easier testnet builds. pkgname subject to change.
         android_pkg_name = util.get_android_package_name()
         for chain in constants.NETS_LIST:
-            if android_pkg_name == f"org.electrum.{chain.cli_flag()}.electrum":
+            if android_pkg_name == f"org.electrum_mona.{chain.cli_flag()}.electrum_mona":
                 config_options[chain.cli_flag()] = True
 
     def get_selected_chain(self) -> Type[constants.AbstractNet]:
@@ -726,7 +726,7 @@ If disabled, the full wallet file is written to disk for every change. Experimen
     )
 
     FX_USE_EXCHANGE_RATE = ConfigVar('use_exchange_rate', default=False, type_=bool)
-    FX_CURRENCY = ConfigVar('currency', default='EUR', type_=str)
+    FX_CURRENCY = ConfigVar('currency', default='JPY', type_=str)
     FX_EXCHANGE = ConfigVar('use_exchange', default='CoinGecko', type_=str)  # default exchange should ideally provide historical rates
     FX_HISTORY_RATES = ConfigVar(
         'history_rates', default=False, type_=bool,
