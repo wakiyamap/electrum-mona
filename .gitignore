@@ -4,33 +4,29 @@
 *.swp
 build/
 dist/
-tmp/
 *.egg/
-Electrum_MONA.egg-info/
-electrum_mona/locale/
+Electrum.egg-info/
 .devlocaltmp/
 *_trial_temp
 packages
 env/
+/.venv*/
 .buildozer
-.buildozer_kivy/
-.buildozer_qml/
+.buildozer_*/
 bin/
-/app.fil
 .idea
 .mypy_cache
 .vscode
 electrum_data
 .DS_Store
+contrib/trigger_website
+contrib/trigger_binaries
 
 # tests/tox
 .tox/
 .cache/
 .coverage
 .pytest_cache
-.pyre/
-.pyre_configuration
-.watchmanconfig
 
 # build workspaces
 contrib/build-wine/tmp/
@@ -38,23 +34,20 @@ contrib/build-wine/build/
 contrib/build-wine/.cache/
 contrib/build-wine/dist/
 contrib/build-wine/signed/
-contrib/build-wine/fresh_clone/
-contrib/build-linux/sdist/fresh_clone/
 contrib/build-linux/appimage/build/
 contrib/build-linux/appimage/.cache/
-contrib/build-linux/appimage/fresh_clone/
 contrib/osx/.cache/
 contrib/osx/build-venv/
-contrib/android/fresh_clone
 contrib/android/android_debug.keystore
+contrib/android/.cache/
 contrib/secp256k1/
 contrib/zbar/
 contrib/libusb/
 contrib/.venv_make_packages/
 
 # shared objects
-electrum_mona/*.so
-electrum_mona/*.so.0
-electrum_mona/*.dll
-electrum_mona/*.dylib
+electrum/*.so
+electrum/*.so.*
+electrum/*.dll
+electrum/*.dylib
 contrib/osx/*.dylib

@@ -10,13 +10,14 @@
 # Or for a Windows x86_64 (64-bit) target, run:
 # $ GCC_TRIPLET_HOST="x86_64-w64-mingw32" BUILD_TYPE="wine" ./contrib/make_zbar.sh
 
-ZBAR_VERSION="aac86d5f08d64ab4c3da78188eb622fa3cb07182"
+ZBAR_VERSION="bb05ec54eec57f8397cb13fb9161372a281a1219"
+# ^ tag 0.23.93
 
 set -e
 
-. $(dirname "$0")/build_tools_util.sh || (echo "Could not source build_tools_util.sh" && exit 1)
+. "$(dirname "$0")/build_tools_util.sh" || (echo "Could not source build_tools_util.sh" && exit 1)
 
-here=$(dirname $(realpath "$0" 2> /dev/null || grealpath "$0"))
+here="$(dirname "$(realpath "$0" 2> /dev/null || grealpath "$0")")"
 CONTRIB="$here"
 PROJECT_ROOT="$CONTRIB/.."
 
@@ -24,7 +25,7 @@ pkgname="zbar"
 info "Building $pkgname..."
 
 (
-    cd $CONTRIB
+    cd "$CONTRIB"
     if [ ! -d zbar ]; then
         git clone https://github.com/mchehab/zbar.git
     fi
@@ -81,13 +82,13 @@ info "Building $pkgname..."
             --disable-static \
             --enable-shared || fail "Could not configure $pkgname. Please make sure you have a C compiler installed and try again."
     fi
-    make -j4 || fail "Could not build $pkgname"
+    make "-j$CPU_COUNT" || fail "Could not build $pkgname"
     make install || fail "Could not install $pkgname"
     . "$here/$pkgname/dist/lib/libzbar.la"
     host_strip "$here/$pkgname/dist/lib/$dlname"
-    cp -fpv "$here/$pkgname/dist/lib/$dlname" "$PROJECT_ROOT/electrum_mona" || fail "Could not copy the $pkgname binary to its destination"
-    info "$dlname has been placed in the inner 'electrum_mona' folder."
+    cp -fpv "$here/$pkgname/dist/lib/$dlname" "$PROJECT_ROOT/electrum" || fail "Could not copy the $pkgname binary to its destination"
+    info "$dlname has been placed in the inner 'electrum' folder."
     if [ -n "$DLL_TARGET_DIR" ] ; then
-        cp -fpv "$here/$pkgname/dist/lib/$dlname" "$DLL_TARGET_DIR" || fail "Could not copy the $pkgname binary to DLL_TARGET_DIR"
+        cp -fpv "$here/$pkgname/dist/lib/$dlname" "$DLL_TARGET_DIR/" || fail "Could not copy the $pkgname binary to DLL_TARGET_DIR"
     fi
 )

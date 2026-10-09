@@ -1,0 +1,158 @@
+#!/usr/bin/env python
+#
+# Electrum - lightweight Bitcoin client
+# Copyright (C) 2025 The Electrum Developers
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+import os
+import asyncio
+from collections import defaultdict
+from typing import TYPE_CHECKING, Optional
+
+from aiohttp import web
+
+from electrum.util import log_exceptions, ignore_exceptions
+from electrum.logging import Logger
+from electrum.util import EventListener
+
+if TYPE_CHECKING:
+    from electrum.simple_config import SimpleConfig
+    from electrum.wallet import Abstract_Wallet
+
+
+class HttpSwapServer(Logger, EventListener):
+    """
+    public API:
+    - getpairs
+    - createswap
+    """
+
+    WWW_DIR = os.path.join(os.path.dirname(__file__), 'www')
+
+    def __init__(self, config: 'SimpleConfig', wallet: 'Abstract_Wallet'):
+        Logger.__init__(self)
+        self.config = config
+        self.wallet = wallet
+        self.sm = self.wallet.lnworker.swap_manager
+        self.port = self.config.SWAPSERVER_PORT
+        self.register_callbacks() # eventlistener
+        self.runner = None  # type: Optional[web.AppRunner]
+        self._start_task = None  # type: Optional[asyncio.Task]
+
+        self.pending = defaultdict(asyncio.Event)
+        self.pending_msg = {}
+
+    @ignore_exceptions
+    @log_exceptions
+    async def run(self):
+
+        while self.wallet.has_password() and self.wallet.get_unlocked_password() is None:
+            self.logger.info("This wallet is password-protected. Please unlock it to start the swapserver plugin")
+            await asyncio.sleep(10)
+
+        # note: starting the site must not be interrupted, hence the shield. TCPSite.start()
+        # registers the site with the runner before it has a server to close, getting cancelled
+        # in between leaves a listening socket behind that nothing holds a reference to anymore.
+        self._start_task = asyncio.create_task(self._start_site())
+        await asyncio.shield(self._start_task)
+
+    async def _start_site(self):
+        app = web.Application()
+        app.add_routes([web.get('/getpairs', self.get_pairs)])
+        app.add_routes([web.post('/createswap', self.create_swap)])
+        app.add_routes([web.post('/createnormalswap', self.create_normal_swap)])
+        app.add_routes([web.post('/addswapinvoice', self.add_swap_invoice)])
+
+        self.runner = runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host='localhost', port=self.port)
+        await site.start()
+        self.logger.info(f"running and listening on port {self.port}")
+
+    async def stop(self):
+        """note: run() returns as soon as the site is up, so cancelling its task does not
+        stop the server. It has to be shut down explicitly."""
+        self.unregister_callbacks()
+        if self._start_task is not None:
+            # the site might still be coming up (see run), and we can only clean up what it created
+            await asyncio.gather(self._start_task, return_exceptions=True)
+            self._start_task = None
+        if self.runner is not None:
+            await self.runner.cleanup()
+            self.runner = None
+        self.logger.info(f"stopped listening on port {self.port}")
+
+    async def get_pairs(self, r):
+        sm = self.sm
+        sm.server_update_pairs()
+        pairs = {
+            "info": [],
+            "warnings": [],
+            "htlcFirst": True,
+            "pairs": {
+                "BTC/BTC": {
+                    "rate": 1,
+                    "limits": {
+                        "maximal": min(sm._max_forward, sm._max_reverse),  # legacy
+                        "max_forward_amount": sm._max_forward,  # new version, uses 2 separate limits
+                        "max_reverse_amount": sm._max_reverse,
+                        "minimal": sm._min_amount,
+                    },
+                    "fees": {
+                        "percentage": float(sm.percentage),  # cast to float for <= 4.7.1 backwards compatibility
+                        "minerFees": {
+                            "baseAsset": {
+                                "normal": sm.mining_fee,
+                                "reverse": {
+                                    "claim": sm.mining_fee,
+                                    "lockup": sm.mining_fee
+                                },
+                                "mining_fee": sm.mining_fee
+                            },
+                            "quoteAsset": {
+                                "normal": sm.mining_fee,
+                                "reverse": {
+                                    "claim": sm.mining_fee,
+                                    "lockup": sm.mining_fee
+                                },
+                                "mining_fee": sm.mining_fee
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return web.json_response(pairs)
+
+    async def add_swap_invoice(self, r):
+        request = await r.json()
+        await self.sm.server_add_swap_invoice(request)
+        return web.json_response({})
+
+    async def create_normal_swap(self, r):
+        request = await r.json()
+        response = self.sm.server_create_normal_swap(request)
+        return web.json_response(response)
+
+    async def create_swap(self, r):
+        request = await r.json()
+        response = self.sm.server_create_swap(request)
+        return web.json_response(response)

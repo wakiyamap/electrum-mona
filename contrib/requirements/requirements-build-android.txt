@@ -1,22 +1,25 @@
 pip
 setuptools
 wheel
-cython
 
 # needed by buildozer:
 pexpect
-virtualenv
 sh
+# some p4a recipes don't work with cython 3+
+cython<3.0
 
 # needed by python-for-android:
+# ref https://github.com/spesmilo/python-for-android/blob/1098be6964cfc2156959e435e81c2c50f8398586/setup.py#L22
+# (meson and ninja we skip as not needed)
 appdirs
-colorama>=0.3.3
+# colorama upper bound to avoid needing hatchling
+colorama>=0.3.3,<0.4.6
 jinja2
-six
-sh>=1.10
-pep517<0.7.0
+sh>=2,<3.0
 toml
+build
+packaging
 
 # needed for the Qt/QML Android GUI:
-PyQt-builder
+# TODO double-check this
 typing-extensions

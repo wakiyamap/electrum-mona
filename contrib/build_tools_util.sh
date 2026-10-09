@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e
+
 # Set a fixed umask as this leaks into docker containers
 umask 0022
 
@@ -23,7 +25,7 @@ function warn {
 function verify_signature() {
     local file=$1 keyring=$2 out=
     if out=$(gpg --no-default-keyring --keyring "$keyring" --status-fd 1 --verify "$file" 2>/dev/null) &&
-       echo "$out" | grep -qs "^\[GNUPG:\] VALIDSIG "; then
+        echo "$out" | grep -qs "^\[GNUPG:\] VALIDSIG "; then
         return 0
     else
         echo "$out" >&2
@@ -33,7 +35,7 @@ function verify_signature() {
 
 function verify_hash() {
     local file=$1 expected_hash=$2
-    actual_hash=$(sha256sum $file | awk '{print $1}')
+    actual_hash=$(sha256sum "$file" | awk '{print $1}')
     if [ "$actual_hash" == "$expected_hash" ]; then
         return 0
     else
@@ -45,30 +47,70 @@ function verify_hash() {
 
 function download_if_not_exist() {
     local file_name=$1 url=$2
-    if [ ! -e $file_name ] ; then
-        wget -O $file_name "$url"
+    if [ ! -e "$file_name" ] ; then
+        wget -O "$file_name" "$url"
+    fi
+}
+
+# Function to clone or update a git repository to a specific commit
+clone_or_update_repo() {
+    local repo_url=$1
+    local commit_hash=$2
+    local repo_dir=$3
+
+    if [ -z "$repo_url" ] || [ -z "$commit_hash" ] || [ -z "$repo_dir" ]; then
+        fail "clone_or_update_repo: invalid arguments: repo_url='$repo_url', commit_hash='$commit_hash', repo_dir='$repo_dir'"
+    fi
+
+    if [ -d "$repo_dir" ]; then
+        info "Repository $repo_url exists in $repo_dir, updating..."
+        git -C "$repo_dir" clean -ffxd >/dev/null 2>&1 || fail "Failed to clean repository $repo_dir"
+        git -C "$repo_dir" fetch --all >/dev/null 2>&1 || fail "Failed to fetch from repository"
+        git -C "$repo_dir" reset --hard "$commit_hash^{commit}" >/dev/null 2>&1 || fail "Failed to reset to commit $commit_hash"
+    else
+        info "Cloning repository: $repo_url to $repo_dir"
+        git clone "$repo_url" "$repo_dir" >/dev/null 2>&1 || fail "Failed to clone repository $repo_url"
+        git -C "$repo_dir" checkout "$commit_hash^{commit}" >/dev/null 2>&1 || fail "Failed to checkout commit $commit_hash"
+    fi
+}
+
+apply_patch() {
+    local patch=$1
+    local path=$2
+
+    if [ -z "$patch" ] || [ -z "$path" ]; then
+        fail "apply_patch: invalid arguments: patch='$patch', path='$path'"
+    fi
+
+    if [ -d "$path" ]; then
+        info "Patching: $patch"
+        cd "$path"
+        patch -p1 <"$patch"
+        cd -
+    else
+        fail "apply_patch: path='$path' not found"
     fi
 }
 
 # https://github.com/travis-ci/travis-build/blob/master/lib/travis/build/templates/header.sh
 function retry() {
-  local result=0
-  local count=1
-  while [ $count -le 3 ]; do
-    [ $result -ne 0 ] && {
-      echo -e "\nThe command \"$@\" failed. Retrying, $count of 3.\n" >&2
+    local result=0
+    local count=1
+    while [ $count -le 3 ]; do
+        [ $result -ne 0 ] && {
+            echo -e "\nThe command \"$@\" failed. Retrying, $count of 3.\n" >&2
+        }
+        ! { "$@"; result=$?; }
+        [ $result -eq 0 ] && break
+        count=$(($count + 1))
+        sleep 1
+    done
+
+    [ $count -gt 3 ] && {
+        echo -e "\nThe command \"$@\" failed 3 times.\n" >&2
     }
-    ! { "$@"; result=$?; }
-    [ $result -eq 0 ] && break
-    count=$(($count + 1))
-    sleep 1
-  done
 
-  [ $count -gt 3 ] && {
-    echo -e "\nThe command \"$@\" failed 3 times.\n" >&2
-  }
-
-  return $result
+    return $result
 }
 
 function gcc_with_triplet()
@@ -129,6 +171,9 @@ if [ -n "$GCC_TRIPLET_BUILD" ] ; then
 fi
 
 export GCC_STRIP_BINARIES="${GCC_STRIP_BINARIES:-0}"
+
+export CPU_COUNT="$(nproc 2> /dev/null || sysctl -n hw.ncpu)"
+info "Found $CPU_COUNT CPUs, which we might use for building."
 
 
 function break_legacy_easy_install() {
