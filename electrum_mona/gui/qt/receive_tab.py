@@ -72,7 +72,7 @@ class ReceiveTab(QWidget, MessageBoxMixin, Logger):
         self.clear_invoice_button.clicked.connect(self.do_clear)
         text = _('Onchain') if self.wallet.has_lightning() else _('Request')
         self.create_onchain_invoice_button = QPushButton(text)
-        self.create_onchain_invoice_button.setIcon(read_QIcon("bitcoin.png"))
+        self.create_onchain_invoice_button.setIcon(read_QIcon("monacoin.png"))
         self.create_onchain_invoice_button.clicked.connect(lambda: self.create_invoice(False))
         self.create_lightning_invoice_button = QPushButton(_('Lightning'))
         self.create_lightning_invoice_button.setIcon(read_QIcon("lightning.png"))

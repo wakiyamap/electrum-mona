@@ -40,9 +40,10 @@ if TYPE_CHECKING:
 
 WIF_HELP_TEXT = (_('WIF keys are typed in Electrum, based on script type.') + '\n\n' +
                  _('A few examples') + ':\n' +
-                 'p2pkh:KxZcY47uGp9a...       \t-> 1DckmggQM...\n' +
-                 'p2wpkh-p2sh:KxZcY47uGp9a... \t-> 3NhNeZQXF...\n' +
-                 'p2wpkh:KxZcY47uGp9a...      \t-> bc1q3fjfk...')
+                 'p2pkh:T8vPbnoUs5Ci...       \t-> MWLEbTAW6...\n' +
+                 'p2wpkh-p2sh:T8vPbnoUs5Ci... \t-> PStEWT3Zs...\n' +
+                 'p2wpkh:T8vPbnoUs5Ci...      \t-> mona1q7cg...')
+# note: full key is T8vPbnoUs5CiEBHcnne1wXuR9V5ft16vRpuvqWTH83tFxT8Uacvn
 
 MSG_HW_STORAGE_ENCRYPTION = _("Set wallet file encryption.") + '\n'\
                           + _("Your wallet file does not contain secrets, mostly just metadata. ") \
@@ -244,7 +245,7 @@ class WalletWizardComponent(WizardComponent, ABC):
 
 class WCWalletName(WalletWizardComponent, Logger):
     def __init__(self, parent, wizard):
-        WalletWizardComponent.__init__(self, parent, wizard, title=_('Electrum wallet'))
+        WalletWizardComponent.__init__(self, parent, wizard, title=_('Electrum-mona wallet'))
         Logger.__init__(self)
 
         path = wizard._path

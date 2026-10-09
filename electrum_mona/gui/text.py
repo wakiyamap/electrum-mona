@@ -65,7 +65,7 @@ class ElectrumGui(BaseElectrumGui, EventListener):
         storage = WalletStorage(config.get_wallet_path())
         password = None
         if not storage.file_exists():
-            print("Wallet not found. try 'electrum create'")
+            print("Wallet not found. try 'electrum-mona create'")
             exit()
         if storage.is_encrypted():
             password = getpass.getpass('Password:', stream=None)

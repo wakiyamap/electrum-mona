@@ -120,7 +120,7 @@ class ContactList(MyTreeView):
             items[self.Columns.ADDRESS].setEditable(False)
             items[self.Columns.NAME].setData(key, self.ROLE_CONTACT_KEY)
             items[self.Columns.NAME].setIcon(
-                read_QIcon("lightning" if contact_type == 'lnaddress' else "bitcoin")
+                read_QIcon("lightning" if contact_type == 'lnaddress' else "monacoin")
             )
             row_count = self.model().rowCount()
             self.model().insertRow(row_count, items)

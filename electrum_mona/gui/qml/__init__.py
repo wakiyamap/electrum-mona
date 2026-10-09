@@ -65,7 +65,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         if hasattr(Qt, "AA_ShareOpenGLContexts"):
             QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
         if hasattr(QGuiApplication, 'setDesktopFileName'):
-            QGuiApplication.setDesktopFileName('electrum')
+            QGuiApplication.setDesktopFileName('electrum-mona')
 
         if "QT_QUICK_CONTROLS_STYLE" not in os.environ:
             os.environ["QT_QUICK_CONTROLS_STYLE"] = "Material"
