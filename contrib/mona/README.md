@@ -55,3 +55,30 @@ to be compiled with `CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN"`:
 
 `electrum_mona/blockchain.py` checks this at import. The build scripts take the
 flags from `contrib/build_tools_util.sh`.
+
+## Releases
+
+The binaries are built by the `builds` workflow (GitHub Actions), which is only
+started by hand. The file names come from `git describe`, so tag first:
+
+```
+git tag -s X.Y.Z && git push origin X.Y.Z
+gh workflow run builds.yml --ref X.Y.Z -f target=all
+gh run list --workflow builds.yml          # wait for the run, note its id
+```
+
+Then, on the machine that holds the release key (`pubkeys/wakiyamap.asc`):
+
+```
+contrib/mona/sign_release.sh --run <run id>
+gh release create X.Y.Z --draft --title X.Y.Z dist-release/<run id>/*
+```
+
+`sign_release.sh` downloads the artifacts of the run and writes a detached GPG
+signature `<file>.asc` next to each file. It can also sign the files of a
+directory (`sign_release.sh <directory>`).
+
+The GPG signature covers the file as it is, so it has to be the last step: once
+the Windows binaries are Authenticode-signed, the dmg is signed and notarized,
+or the APK is signed with the release keystore, sign those files and not the
+unsigned ones from the workflow.

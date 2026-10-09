@@ -4,6 +4,7 @@
 *.swp
 build/
 dist/
+dist-release/
 tmp/
 *.egg/
 Electrum_MONA.egg-info/
