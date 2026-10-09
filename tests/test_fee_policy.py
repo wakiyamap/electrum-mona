@@ -1,6 +1,7 @@
 from electrum_mona.fee_policy import FeeHistogram, FeePolicy
 
 from . import ElectrumTestCase
+from .upstream_params import upstream_relay_feerate
 
 
 class Test_FeeHistogram(ElectrumTestCase):
@@ -11,6 +12,7 @@ class Test_FeeHistogram(ElectrumTestCase):
     def tearDown(self):
         super(Test_FeeHistogram, self).tearDown()
 
+    @upstream_relay_feerate()
     def test_depth_target_to_fee(self):
         mempool_fees = FeeHistogram()
         mempool_fees.set_data([[49, 100110], [10, 121301], [6, 153731], [5, 125872], [1, 36488810]])

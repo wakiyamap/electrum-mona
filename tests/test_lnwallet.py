@@ -29,6 +29,7 @@ from electrum_mona.lnonion import OnionPacket, OnionRoutingFailure, OnionFailure
 from electrum_mona.mpp_split import SplitConfig, SplitConfigRating
 from electrum_mona.crypto import sha256, pw_encode_with_version_and_mac
 from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.fee_policy import FEE_ETA_TARGETS
 from electrum_mona.transaction import Transaction, TxOutpoint, BCDataStream
 from electrum_mona.util import bfh, UserFacingException
 from electrum_mona.storage import WalletStorage
@@ -640,6 +641,12 @@ class TestChannelBackup(ToyServerTestCase):
         await super().asyncSetUp()
         self.alice_instance = await self.create_instance("alice")
         self.bob_instance = await self.create_instance("bob")
+        # Electrum-MONA: the feerate floors (FEERATE_DEFAULT_RELAY, FEERATE_PER_KW_MIN_RELAY_LIGHTNING) are 100x
+        # upstream's, so scale the fee estimates of the toy network too. Otherwise a commitment tx
+        # would always pay more than the target feerate, and its anchors would never get claimed.
+        for instance in (self.alice_instance, self.bob_instance):
+            for target in FEE_ETA_TARGETS[:-1]:
+                instance.network.fee_estimates.set_data(target, 100 * 50_000 // target)
         self.bob_instance.config.LIGHTNING_LISTEN = f"127.0.0.1:{find_free_port()}"
         self.bob = self.create_wallet("bob", instance=self.bob_instance)
         await self.wait_until(lambda: self.bob.lnworker.lnpeermgr.listen_server is not None)

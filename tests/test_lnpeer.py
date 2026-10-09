@@ -119,7 +119,7 @@ def send_trampoline_htlc_to_forward(
     outer_payment_secret: bytes,
     htlc_amount_msat: int,
     amt_to_forward: int,
-    inner_cltv_delta: int = 144,
+    inner_cltv_delta: int = 960,
     outgoing_node_id: bytes = None,
 ) -> UpdateAddHtlc:
     """Sends an htlc from w1 to w2 whose outer onion is a final hop to w2, claiming
@@ -129,7 +129,7 @@ def send_trampoline_htlc_to_forward(
     note: nothing constrains the outer onion's total_msat here. w2 is not the final
     recipient, so he has no invoice to validate such an htlc against.
     """
-    cltv_abs = w1.network.get_local_height() + 500
+    cltv_abs = w1.network.get_local_height() + 3000
     next_node_id = outgoing_node_id or privkey_to_pubkey(os.urandom(32))
     trampoline_hops_data = [
         OnionHopsDataSingle(payload={
@@ -753,18 +753,18 @@ class TestPeerDirect(TestPeer):
 
             async def try_pay_with_too_low_final_cltv_delta(lnaddr, w1=w1, w2=w2):
                 self.assertEqual(PR_UNPAID, w2.get_payment_status(lnaddr.paymenthash, direction=RECEIVED))
-                assert lnaddr.get_min_final_cltv_delta() == 400  # what the receiver expects
-                lnaddr.tags = [tag for tag in lnaddr.tags if tag[0] != 'c'] + [['c', 144]]
+                assert lnaddr.get_min_final_cltv_delta() == 2000  # what the receiver expects
+                lnaddr.tags = [tag for tag in lnaddr.tags if tag[0] != 'c'] + [['c', 960]]
                 b11 = encode_bolt11_invoice(lnaddr, w2.node_keypair.privkey)
                 pay_req = Invoice.from_bech32(b11)
-                assert pay_req._lnaddr.get_min_final_cltv_delta() == 144  # what w1 will use to pay
+                assert pay_req._lnaddr.get_min_final_cltv_delta() == 960  # what w1 will use to pay
                 result, log = await w1.pay_invoice(pay_req)
                 if not result:
                     raise PaymentFailure()
                 raise PaymentDone()
 
             # create invoice with high min final cltv delta
-            lnaddr, _pay_req = self.prepare_invoice(w2, min_final_cltv_delta=400)
+            lnaddr, _pay_req = self.prepare_invoice(w2, min_final_cltv_delta=2000)
 
             if test_trampoline:
                 await self._activate_trampoline(w1)
@@ -1273,7 +1273,7 @@ class TestPeerDirect(TestPeer):
             await util.wait_for2(p1.initialized, 1)
             await util.wait_for2(p2.initialized, 1)
             w2.features |= LnFeatures.BASIC_MPP_OPT
-            lnaddr1, _pay_req = self.prepare_invoice(w2, amount_msat=10_000, min_final_cltv_delta=144)
+            lnaddr1, _pay_req = self.prepare_invoice(w2, amount_msat=10_000, min_final_cltv_delta=960)
             self.assertTrue(lnaddr1.get_features().supports(LnFeatures.BASIC_MPP_OPT))
             route = (await w1.create_routes_from_invoice(amount_msat=10_000, decoded_invoice=lnaddr1))[0][0].route
 
@@ -1285,7 +1285,7 @@ class TestPeerDirect(TestPeer):
                 total_msat=lnaddr1.get_amount_msat(),
                 payment_hash=lnaddr1.paymenthash,
                 # this htlc is valid and will get accepted, but it shouldn't get settled
-                min_final_cltv_delta=400,
+                min_final_cltv_delta=2000,
                 payment_secret=lnaddr1.payment_secret,
             )
             await asyncio.sleep(0.1)
@@ -1296,7 +1296,7 @@ class TestPeerDirect(TestPeer):
                 amount_msat=9_999,
                 total_msat=lnaddr1.get_amount_msat(),
                 payment_hash=lnaddr1.paymenthash,
-                # this htlc will get failed directly as the cltv is too close to expiry (< 144)
+                # this htlc will get failed directly as the cltv is too close to expiry (< 960)
                 min_final_cltv_delta=1,
                 payment_secret=lnaddr1.payment_secret,
             )
@@ -1520,7 +1520,7 @@ class TestPeerDirect(TestPeer):
                     amount_msat=lnaddr1.get_amount_msat() // 4,
                     total_msat=lnaddr1.get_amount_msat(),
                     payment_hash=lnaddr1.paymenthash,
-                    min_final_cltv_delta=400,
+                    min_final_cltv_delta=2000,
                     payment_secret=lnaddr1.payment_secret,
                 )
                 alice_peer.pay(  # htlc 2
@@ -1529,7 +1529,7 @@ class TestPeerDirect(TestPeer):
                     amount_msat=lnaddr1.get_amount_msat() // 4,
                     total_msat=lnaddr1.get_amount_msat(),
                     payment_hash=lnaddr1.paymenthash,
-                    min_final_cltv_delta=400,
+                    min_final_cltv_delta=2000,
                     payment_secret=lnaddr1.payment_secret,
                 )
                 await asyncio.sleep(bob_wallet.MPP_EXPIRY // 2)  # give bob time to receive the htlc
@@ -1917,7 +1917,7 @@ class TestPeerDirect(TestPeer):
             alice_p, bob_p = graph.peers.values()
             alice_w, bob_w = graph.workers.values()
 
-            lnaddr, pay_req = self.prepare_invoice(bob_w, min_final_cltv_delta=150)
+            lnaddr, pay_req = self.prepare_invoice(bob_w, min_final_cltv_delta=1000)
             del bob_w._preimages[pay_req.rhash]  # del preimage so bob doesn't settle
             payment_key = bob_w._get_payment_key(lnaddr.paymenthash).hex()
 
@@ -2058,7 +2058,7 @@ class TestPeerDirect(TestPeer):
                 }
 
             preimage = os.urandom(32)
-            lnaddr, pay_req = self.prepare_invoice(w2, payment_preimage=preimage, min_final_cltv_delta=144)
+            lnaddr, pay_req = self.prepare_invoice(w2, payment_preimage=preimage, min_final_cltv_delta=960)
 
             # delete preimage, this would fail the htlcs if payment_hash wasn't in dont_expire_htlcs
             del w2._preimages[pay_req.rhash]
@@ -2085,13 +2085,13 @@ class TestPeerDirect(TestPeer):
                 await asyncio.sleep(0.25)  # give w2 some time to do mistakes
                 self.assertEqual(w2.received_mpp_htlcs[payment_key.hex()].resolution, RecvMPPResolution.COMPLETE)
                 if test_expiry:
-                    # we set an expiry delta of 20 blocks before expiry, htlc expiry should be +144 current height
+                    # we set an expiry delta of 20 blocks before expiry, htlc expiry should be +960 current height
                     # so adding some blocks should get the htlcs failed
                     w2.network.blockchain()._height += 50
                     await asyncio.sleep(0.1)
-                    # the htlcs should not get failed yet as 144-50 > 20
+                    # the htlcs should not get failed yet as 960-50 > 20
                     self.assertEqual(w2.received_mpp_htlcs[payment_key.hex()].resolution, RecvMPPResolution.COMPLETE)
-                    w2.network.blockchain()._height += 75
+                    w2.network.blockchain()._height += 891
                     return  # the htlcs should get failed and pay should return PaymentFailure
 
                 # saving the preimage should let the htlcs get fulfilled

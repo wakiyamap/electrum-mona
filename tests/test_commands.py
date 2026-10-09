@@ -152,7 +152,7 @@ class TestCommands(ElectrumTestCase):
         cmds = Commands(config=self.config)
         msg = "hello there"
         addr = "bc1qq2tmmcngng78nllq2pvrkchcdukemtj56uyue0"
-        sig = "HznHvCsY//Zr5JvPIR3rN/RbCkttvrUs8Yt+vw+e1c29BLMSlcrN4+Y4Pq8e/UJuh2bDrUboTfsFhBJap+fPmNY="
+        sig = "H3MAD1Hg2wQPWm2s9mFAvuG60XrBflVTN2uQE7GseVq4IqvTpnQJaTRW0PRhs2qAlXq+jLHsn7RO0ry1JJJnuNU="
         self.assertTrue(await cmds.verifymessage(addr, sig, msg))
         self.assertFalse(await cmds.verifymessage(addr, sig+"trailinggarbage", msg))
 
