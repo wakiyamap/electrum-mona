@@ -83,7 +83,7 @@ jobs:
         run: |
           ./contrib/make_libsecp256k1.sh
           mkdir -p contrib/_saved_secp256k1_build
-          cp electrum/libsecp256k1.so.* contrib/_saved_secp256k1_build/
+          cp electrum_mona/libsecp256k1.so.* contrib/_saved_secp256k1_build/
       - name: Start bitcoind (regtest)
         run: nohup tests/regtest/run_bitcoind.sh > /tmp/bitcoind.log 2>&1 &
       - name: Start electrumx

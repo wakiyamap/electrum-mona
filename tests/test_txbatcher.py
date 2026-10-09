@@ -5,16 +5,16 @@ import dataclasses
 
 from aiorpcx import timeout_after
 
-import electrum.fee_policy
-from electrum import keystore, wallet, lnutil
-from electrum import SimpleConfig
-from electrum import util
-from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
-from electrum.transaction import Transaction, PartialTxInput, PartialTxOutput, TxOutpoint
-from electrum.logging import console_stderr_handler, Logger
-from electrum.submarine_swaps import SwapManager, SwapData
-from electrum.lnsweep import SweepInfo, sweep_ctx_anchor
-from electrum.fee_policy import FeeTimeEstimates
+import electrum_mona.fee_policy
+from electrum_mona import keystore, wallet, lnutil
+from electrum_mona import SimpleConfig
+from electrum_mona import util
+from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum_mona.transaction import Transaction, PartialTxInput, PartialTxOutput, TxOutpoint
+from electrum_mona.logging import console_stderr_handler, Logger
+from electrum_mona.submarine_swaps import SwapManager, SwapData
+from electrum_mona.lnsweep import SweepInfo, sweep_ctx_anchor
+from electrum_mona.fee_policy import FeeTimeEstimates
 
 from . import ElectrumTestCase
 from .test_wallet_vertical import WalletIntegrityHelper, read_test_vector
@@ -327,7 +327,7 @@ class TestTxBatcher(ElectrumTestCase):
 
         # does not return sweep input if ctx fee is already higher than target fee
         with mock.patch.object(wallet.adb, 'get_tx_fee', return_value=2000), \
-                mock.patch.object(electrum.fee_policy.FeePolicy, 'estimate_fee', return_value=1000):
+                mock.patch.object(electrum_mona.fee_policy.FeePolicy, 'estimate_fee', return_value=1000):
             to_sweep_high_fee = anchor_batch._to_sweep_after(tx=None)
         self.assertFalse(to_sweep_high_fee)
 

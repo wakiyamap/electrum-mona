@@ -31,7 +31,7 @@ info "preparing electrum-locale."
     # Set option OMIT_UNCLEAN_FILES=1 to exclude the compiled locale files
     # see https://askubuntu.com/a/144139 (also see MANIFEST.in)
     if ([ "$OMIT_UNCLEAN_FILES" = 1 ]); then
-        rm -r "$PROJECT_ROOT/electrum/locale/locale"/*/LC_MESSAGES/electrum.mo
+        rm -r "$PROJECT_ROOT/electrum_mona/locale/locale"/*/LC_MESSAGES/electrum.mo
     fi
 )
 

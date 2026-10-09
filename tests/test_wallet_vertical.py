@@ -6,24 +6,24 @@ from typing import Sequence
 import asyncio
 import copy
 
-from electrum import bitcoin, keystore, bip32, slip39
-from electrum.wallet_db import WalletDB
-from electrum.storage import WalletStorage
-from electrum import SimpleConfig
-from electrum import util
-from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_LOCAL, TX_HEIGHT_FUTURE
-from electrum.wallet import (sweep, sweep_preparations, Multisig_Wallet, Standard_Wallet, Imported_Wallet,
+from electrum_mona import bitcoin, keystore, bip32, slip39
+from electrum_mona.wallet_db import WalletDB
+from electrum_mona.storage import WalletStorage
+from electrum_mona import SimpleConfig
+from electrum_mona import util
+from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_LOCAL, TX_HEIGHT_FUTURE
+from electrum_mona.wallet import (sweep, sweep_preparations, Multisig_Wallet, Standard_Wallet, Imported_Wallet,
                              Abstract_Wallet, CannotBumpFee, BumpFeeStrategy,
                              TransactionPotentiallyDangerousException,
                              TransactionDangerousException,
                              TxSighashRiskLevel, CannotDoubleSpendTx)
-from electrum.util import bfh, NotEnoughFunds, UnrelatedTransactionException, UserFacingException, TxMinedInfo
-from electrum.fee_policy import FixedFeePolicy
-from electrum.transaction import Transaction, PartialTxOutput, tx_from_any, Sighash
-from electrum.mnemonic import calc_seed_type
-from electrum.network import Network
+from electrum_mona.util import bfh, NotEnoughFunds, UnrelatedTransactionException, UserFacingException, TxMinedInfo
+from electrum_mona.fee_policy import FixedFeePolicy
+from electrum_mona.transaction import Transaction, PartialTxOutput, tx_from_any, Sighash
+from electrum_mona.mnemonic import calc_seed_type
+from electrum_mona.network import Network
 
-from electrum.plugins.trustedcoin import trustedcoin
+from electrum_mona.plugins.trustedcoin import trustedcoin
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest
@@ -98,7 +98,7 @@ class WalletIntegrityHelper:
 
 def read_test_vector(filename: str):
     import os
-    from electrum.util import read_json_file
+    from electrum_mona.util import read_json_file
     path = os.path.join(os.path.dirname(__file__), filename)
     data = read_json_file(path)
     return data

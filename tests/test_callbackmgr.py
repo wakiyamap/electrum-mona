@@ -1,10 +1,10 @@
 import asyncio
 import weakref
 
-from electrum import util
-from electrum.util import EventListener, event_listener, trigger_callback
-from electrum.utils.memory_leak import count_objects_in_memory, wait_until_obj_is_garbage_collected
-from electrum.simple_config import SimpleConfig
+from electrum_mona import util
+from electrum_mona.util import EventListener, event_listener, trigger_callback
+from electrum_mona.utils.memory_leak import count_objects_in_memory, wait_until_obj_is_garbage_collected
+from electrum_mona.simple_config import SimpleConfig
 
 from . import ElectrumTestCase, restore_wallet_from_text__for_unittest
 

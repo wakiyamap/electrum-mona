@@ -15,7 +15,7 @@ ARCH_DICT = {
 
 def get_electrum_version() -> str:
     project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    version_file_path = os.path.join(project_root, "electrum", "version.py")
+    version_file_path = os.path.join(project_root, "electrum_mona", "version.py")
     # load version.py; needlessly complicated alternative to "imp.load_source":
     version_spec = importlib.util.spec_from_file_location('version', version_file_path)
     version_module = version = importlib.util.module_from_spec(version_spec)

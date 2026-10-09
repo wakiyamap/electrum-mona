@@ -3,7 +3,7 @@
 set -e
 
 PROJECT_ROOT="$(dirname "$(readlink -e "$0")")/../.."
-LOCALE="$PROJECT_ROOT/electrum/locale/"
+LOCALE="$PROJECT_ROOT/electrum_mona/locale/"
 
 cd "$PROJECT_ROOT"
 

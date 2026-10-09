@@ -28,24 +28,24 @@ source.exclude_dirs =
     tests,
     fastlane,
     electrum/www,
-    electrum/scripts,
-    electrum/utils,
-    electrum/gui/qt,
-    electrum/plugins/audio_modem,
-    electrum/plugins/bitbox02,
-    electrum/plugins/coldcard,
-    electrum/plugins/digitalbitbox,
-    electrum/plugins/jade,
-    electrum/plugins/keepkey,
-    electrum/plugins/ledger,
-    electrum/plugins/nwc,
-    electrum/plugins/payserver,
-    electrum/plugins/revealer,
-    electrum/plugins/safe_t,
-    electrum/plugins/swapserver,
-    electrum/plugins/timelock_recovery,
-    electrum/plugins/trezor,
-    electrum/plugins/watchtower,
+    electrum_mona/scripts,
+    electrum_mona/utils,
+    electrum_mona/gui/qt,
+    electrum_mona/plugins/audio_modem,
+    electrum_mona/plugins/bitbox02,
+    electrum_mona/plugins/coldcard,
+    electrum_mona/plugins/digitalbitbox,
+    electrum_mona/plugins/jade,
+    electrum_mona/plugins/keepkey,
+    electrum_mona/plugins/ledger,
+    electrum_mona/plugins/nwc,
+    electrum_mona/plugins/payserver,
+    electrum_mona/plugins/revealer,
+    electrum_mona/plugins/safe_t,
+    electrum_mona/plugins/swapserver,
+    electrum_mona/plugins/timelock_recovery,
+    electrum_mona/plugins/trezor,
+    electrum_mona/plugins/watchtower,
     packages/qdarkstyle,
     packages/qtpy,
     packages/bin,
@@ -61,7 +61,7 @@ source.exclude_patterns = Makefile,setup*,
 
 # (str) Application versioning (method 1)
 version.regex = ELECTRUM_VERSION = '(.*)'
-version.filename = %(source.dir)s/electrum/version.py
+version.filename = %(source.dir)s/electrum_mona/version.py
 
 # (str) Application versioning (method 2)
 #version = 1.9.8
@@ -82,12 +82,12 @@ requirements =
     libzbar
 
 # (str) Presplash of the application
-presplash.filename = %(source.dir)s/electrum/gui/icons/electrum_presplash.png
+presplash.filename = %(source.dir)s/electrum_mona/gui/icons/electrum_presplash.png
 
 # (str) Icon of the application
-icon.filename = %(source.dir)s/electrum/gui/icons/android_electrum_icon_legacy.png
-icon.adaptive_foreground.filename = %(source.dir)s/electrum/gui/icons/android_electrum_icon_foreground.png
-icon.adaptive_background.filename = %(source.dir)s/electrum/gui/icons/android_electrum_icon_background.png
+icon.filename = %(source.dir)s/electrum_mona/gui/icons/android_electrum_icon_legacy.png
+icon.adaptive_foreground.filename = %(source.dir)s/electrum_mona/gui/icons/android_electrum_icon_foreground.png
+icon.adaptive_background.filename = %(source.dir)s/electrum_mona/gui/icons/android_electrum_icon_background.png
 
 # (str) Supported orientation (one of landscape, portrait or all)
 orientation = portrait
@@ -164,7 +164,7 @@ android.add_aars =
 
 # (list) List of Java files to add to the android project (can be java or a
 # directory containing the files)
-android.add_src = electrum/gui/qml/java_classes/
+android.add_src = electrum_mona/gui/qml/java_classes/
 
 # kotlin-stdlib is required for zxing-cpp (BarcodeScannerView)
 android.gradle_dependencies =
@@ -183,7 +183,7 @@ android.add_activities = org.electrum.qr.SimpleScannerActivity, org.electrum.bio
 # 3) A directory, here 'legal_resources' must contain one or more directories,
 # each of a resource kind:  drawable, xml, etc...
 # android.add_resources = legal_resources
-android.add_resources = electrum/gui/qml/android_res/layout:layout
+android.add_resources = electrum_mona/gui/qml/android_res/layout:layout
 
 # (str) python-for-android branch to use, if not master, useful to try
 # not yet merged features.

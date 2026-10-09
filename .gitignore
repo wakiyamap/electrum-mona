@@ -46,8 +46,8 @@ contrib/libusb/
 contrib/.venv_make_packages/
 
 # shared objects
-electrum/*.so
-electrum/*.so.*
-electrum/*.dll
-electrum/*.dylib
+electrum_mona/*.so
+electrum_mona/*.so.*
+electrum_mona/*.dll
+electrum_mona/*.dylib
 contrib/osx/*.dylib

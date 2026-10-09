@@ -20,37 +20,37 @@ from aiorpcx import timeout_after, TaskTimeout
 from electrum_ecc import ECPrivkey
 import electrum_ecc as ecc
 
-import electrum
-import electrum.trampoline
-from electrum import bitcoin
-from electrum import util
-from electrum import constants
-from electrum import bip32
-from electrum.network import Network, ProxySettings
-from electrum import simple_config, lnutil
-from electrum.bolt11 import encode_bolt11_invoice, BOLT11Addr
-from electrum.bitcoin import sha256
-from electrum.transaction import Transaction
-from electrum.util import NetworkRetryManager, bfh, OldTaskGroup, EventListener, InvoiceError
-from electrum.lnpeer import Peer
-from electrum.lnpeer import CoopCloseFailure
-from electrum.lntransport import LNPeerAddr
-from electrum.crypto import privkey_to_pubkey
-from electrum.lnutil import Keypair, PaymentFailure, LnFeatures, HTLCOwner, PaymentFeeBudget, RECEIVED
-from electrum.lnchannel import ChannelState, PeerState, Channel
-from electrum.lnrouter import LNPathFinder, PathEdge, LNPathInconsistent
-from electrum.channel_db import ChannelDB, InvalidGossipMsg
-from electrum.lnworker import LNWallet, NoPathFound, SentHtlcInfo, PaySession, LNPeerManager
-from electrum.lnmsg import encode_msg, decode_msg
-from electrum import lnmsg
-from electrum.logging import console_stderr_handler, Logger
-from electrum.lnonion import OnionFailureCode, OnionRoutingFailure, OnionHopsDataSingle, OnionPacket, OnionParsingError
-from electrum.lnutil import LOCAL, REMOTE, UpdateAddHtlc, RecvMPPResolution, RevocationStore
-from electrum.invoices import PR_PAID, PR_UNPAID, PR_INFLIGHT, Invoice, PR_FAILED
-from electrum.interface import GracefulDisconnect
-from electrum.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
-from electrum.mpp_split import split_amount_normal
-from electrum.wallet import Abstract_Wallet, Standard_Wallet
+import electrum_mona
+import electrum_mona.trampoline
+from electrum_mona import bitcoin
+from electrum_mona import util
+from electrum_mona import constants
+from electrum_mona import bip32
+from electrum_mona.network import Network, ProxySettings
+from electrum_mona import simple_config, lnutil
+from electrum_mona.bolt11 import encode_bolt11_invoice, BOLT11Addr
+from electrum_mona.bitcoin import sha256
+from electrum_mona.transaction import Transaction
+from electrum_mona.util import NetworkRetryManager, bfh, OldTaskGroup, EventListener, InvoiceError
+from electrum_mona.lnpeer import Peer
+from electrum_mona.lnpeer import CoopCloseFailure
+from electrum_mona.lntransport import LNPeerAddr
+from electrum_mona.crypto import privkey_to_pubkey
+from electrum_mona.lnutil import Keypair, PaymentFailure, LnFeatures, HTLCOwner, PaymentFeeBudget, RECEIVED
+from electrum_mona.lnchannel import ChannelState, PeerState, Channel
+from electrum_mona.lnrouter import LNPathFinder, PathEdge, LNPathInconsistent
+from electrum_mona.channel_db import ChannelDB, InvalidGossipMsg
+from electrum_mona.lnworker import LNWallet, NoPathFound, SentHtlcInfo, PaySession, LNPeerManager
+from electrum_mona.lnmsg import encode_msg, decode_msg
+from electrum_mona import lnmsg
+from electrum_mona.logging import console_stderr_handler, Logger
+from electrum_mona.lnonion import OnionFailureCode, OnionRoutingFailure, OnionHopsDataSingle, OnionPacket, OnionParsingError
+from electrum_mona.lnutil import LOCAL, REMOTE, UpdateAddHtlc, RecvMPPResolution, RevocationStore
+from electrum_mona.invoices import PR_PAID, PR_UNPAID, PR_INFLIGHT, Invoice, PR_FAILED
+from electrum_mona.interface import GracefulDisconnect
+from electrum_mona.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
+from electrum_mona.mpp_split import split_amount_normal
+from electrum_mona.wallet import Abstract_Wallet, Standard_Wallet
 
 from .test_bitcoin import needs_test_with_all_chacha20_implementations
 from . import ElectrumTestCase, restore_wallet_from_text__for_unittest, lnhelpers
@@ -143,7 +143,7 @@ def send_trampoline_htlc_to_forward(
             "payment_data": {"payment_secret": os.urandom(32), "total_msat": amt_to_forward},
         }),
     ]
-    trampoline_onion = electrum.lnonion.new_onion_packet(
+    trampoline_onion = electrum_mona.lnonion.new_onion_packet(
         [w2.node_keypair.pubkey, next_node_id],
         os.urandom(32),
         trampoline_hops_data,
@@ -156,7 +156,7 @@ def send_trampoline_htlc_to_forward(
         "payment_data": {"payment_secret": outer_payment_secret, "total_msat": htlc_amount_msat},
         "trampoline_onion_packet": {"trampoline_onion_packet": trampoline_onion.to_bytes()},
     })]
-    onion = electrum.lnonion.new_onion_packet(
+    onion = electrum_mona.lnonion.new_onion_packet(
         [w2.node_keypair.pubkey], os.urandom(32), hops_data, associated_data=payment_hash)
     return p1.send_htlc(
         chan=chan,
@@ -180,7 +180,7 @@ class TestPeer(ElectrumTestCase):
         self.GRAPH_DEFINITIONS = copy.deepcopy(lnhelpers._GRAPH_DEFINITIONS)
 
     async def asyncTearDown(self):
-        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
+        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
         await super().asyncTearDown()
 
     prepare_invoice = staticmethod(lnhelpers.prepare_invoice)
@@ -647,7 +647,7 @@ class TestPeerDirect(TestPeer):
         if test_trampoline:
             await self._activate_trampoline(w1)
             # declare bob as trampoline node
-            electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+            electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                 'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
             }
 
@@ -769,7 +769,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -813,7 +813,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -844,7 +844,7 @@ class TestPeerDirect(TestPeer):
                 await self._activate_trampoline(w1)
                 await self._activate_trampoline(w2)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -896,7 +896,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -1506,7 +1506,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(alice_wallet)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_wallet.node_keypair.pubkey),
                 }
 
@@ -1585,7 +1585,7 @@ class TestPeerDirect(TestPeer):
                 self.assertIsNone(coop_fail)
                 self.assertEqual((chan_ab._state, chan_ba._state), (ChannelState.CLOSING, ChannelState.CLOSING))
 
-    @mock.patch('electrum.lnpeer.LN_P2P_NETWORK_TIMEOUT', 0.05)
+    @mock.patch('electrum_mona.lnpeer.LN_P2P_NETWORK_TIMEOUT', 0.05)
     async def test_modern_shutdown_no_overlap(self):
         for alice_closes in [True, False]:
             with self.subTest(alice_closes=alice_closes):
@@ -1949,7 +1949,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(alice_w)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_w.node_keypair.pubkey),
                 }
 
@@ -1983,7 +1983,7 @@ class TestPeerDirect(TestPeer):
         alice_p, bob_p, alice_w, bob_w = self.prepare_peers(alice_channel, bob_channel)
 
         await self._activate_trampoline(alice_w)
-        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_w.node_keypair.pubkey),
         }
 
@@ -2053,7 +2053,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -2142,7 +2142,7 @@ class TestPeerForwarding(TestPeer):
 
         async def pay(lnaddr, pay_req):
             self.assertEqual(PR_UNPAID, graph.workers['alice'].get_payment_status(lnaddr.paymenthash, direction=RECEIVED))
-            with mock.patch('electrum.mpp_split.split_amount_normal',
+            with mock.patch('electrum_mona.mpp_split.split_amount_normal',
                                 side_effect=mocked_split_amount_normal):
                 result, log = await graph.workers['bob'].pay_invoice(pay_req)
             self.assertTrue(result)
@@ -2497,7 +2497,7 @@ class TestPeerForwarding(TestPeer):
 
     async def test_payment_multipart_trampoline_e2e(self):
         graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['square_graph'])
-        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             graph.workers['bob'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['bob'].node_keypair.pubkey),
             graph.workers['carol'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['carol'].node_keypair.pubkey),
         }
@@ -2506,7 +2506,7 @@ class TestPeerForwarding(TestPeer):
 
     async def test_payment_multipart_trampoline_legacy(self):
         graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['square_graph'])
-        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             graph.workers['bob'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['bob'].node_keypair.pubkey),
             graph.workers['carol'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['carol'].node_keypair.pubkey),
         }
@@ -2604,12 +2604,12 @@ class TestPeerForwarding(TestPeer):
         peers = graph.peers.values()
 
         # declare routing nodes as trampoline nodes
-        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
+        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
         for name in trampoline_forwarders:
             user_w = graph.workers[name]
             user_w.config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS = True
             peer_addr = LNPeerAddr(host="127.0.0.1", port=9735, pubkey=user_w.node_keypair.pubkey)
-            electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS[user_w.name] = peer_addr
+            electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS[user_w.name] = peer_addr
 
         for user in trampoline_users:
             user_w = graph.workers[user]
@@ -2791,14 +2791,14 @@ class TestPeerForwarding(TestPeer):
             new_payload['amt_to_forward'] = amt_to_forward
             modified_hops_data[0] = dataclasses.replace(modified_hops_data[0], payload=new_payload)
             self.logger.debug(f"{modified_hops_data=}\nsent_{hops_data=}")
-            modified_trampoline_onion = electrum.lnonion.new_onion_packet(
+            modified_trampoline_onion = electrum_mona.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 modified_hops_data,
                 **kwargs
             )
             # return the unmodified onion
-            return electrum.lnonion.new_onion_packet(
+            return electrum_mona.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 hops_data,
@@ -2819,7 +2819,7 @@ class TestPeerForwarding(TestPeer):
                 }
                 hops_data[0] = dataclasses.replace(hops_data[0], payload=MappingProxyType(new_payload))
                 modified_trampoline_onion = None
-            return electrum.lnonion.new_onion_packet(
+            return electrum_mona.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 hops_data,
@@ -2830,8 +2830,8 @@ class TestPeerForwarding(TestPeer):
         alice = graph.workers['alice']
         alice.config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # set high so the first attempt would succeed
         with self.assertRaises(PaymentFailure):
-            with mock.patch('electrum.trampoline.new_onion_packet', side_effect=modified_new_onion_packet_trampoline), \
-                    mock.patch('electrum.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
+            with mock.patch('electrum_mona.trampoline.new_onion_packet', side_effect=modified_new_onion_packet_trampoline), \
+                    mock.patch('electrum_mona.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
                         await self._run_trampoline_payment(graph, attempts=1)
         bob_alice_channel = graph.channels[('bob', 'alice')][0]
         bob_hm = bob_alice_channel.hm
@@ -2853,13 +2853,13 @@ class TestPeerForwarding(TestPeer):
                 payment_data['total_msat'] *= 2  # bob should expect double the amount she actually receives
                 payload['payment_data'] = payment_data
                 hops_data[-1] = dataclasses.replace(hops_data[-1], payload=payload)
-            return electrum.lnonion.new_onion_packet(payment_path_pubkeys, session_key, hops_data, **kwargs)
+            return electrum_mona.lnonion.new_onion_packet(payment_path_pubkeys, session_key, hops_data, **kwargs)
 
         graph = self.create_square_graph(direct=False, is_legacy=True)
         alice = graph.workers['alice']
         alice.config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # set high so the payment would succeed if bob forwarded
         with self.assertLogs('electrum', level='INFO') as logs, self.assertRaises(NoPathFound):
-            with mock.patch('electrum.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
+            with mock.patch('electrum_mona.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
                 await self._run_trampoline_payment(graph, attempts=1)
         self.assertTrue(any('MPP TIMEOUT' in record.getMessage() for record in logs.records))
         bob_carol_channel = graph.channels[('bob', 'carol')][0]
@@ -2916,7 +2916,7 @@ class TestPeerForwarding(TestPeer):
             if test_trampoline:
                 # trampoline forwarder
                 graph.workers['bob'].config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS = True
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     graph.workers['bob'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['bob'].node_keypair.pubkey),
                 }
                 # trampoline users

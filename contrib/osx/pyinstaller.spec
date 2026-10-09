@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 
 PACKAGE_NAME='Electrum.app'
-PYPKG='electrum'
+PYPKG='electrum_mona'
 MAIN_SCRIPT='run_electrum'
 PROJECT_ROOT = os.path.abspath(".")
 ICONS_FILE=f"{PROJECT_ROOT}/{PYPKG}/gui/icons/electrum.icns"

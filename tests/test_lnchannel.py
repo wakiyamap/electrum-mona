@@ -31,21 +31,21 @@ import time
 
 import electrum_ecc as ecc
 
-from electrum import bitcoin
-from electrum import lnchannel
-from electrum import lnutil
-from electrum.crypto import sha256
-from electrum.lnutil import (
+from electrum_mona import bitcoin
+from electrum_mona import lnchannel
+from electrum_mona import lnutil
+from electrum_mona.crypto import sha256
+from electrum_mona.lnutil import (
     SENT, LOCAL, REMOTE, RECEIVED, UpdateAddHtlc, ChannelType,
     effective_htlc_tx_weight, ZEROCONF_TIMEOUT,
     CHANNEL_OPENING_TIMEOUT_SEC,
 )
-from electrum.logging import console_stderr_handler
-from electrum.lnchannel import ChannelState, Channel
-from electrum.util import TxMinedInfo
-from electrum.address_synchronizer import TX_HEIGHT_LOCAL
-from electrum.lnsweep import SweepInfo
-from electrum.transaction import PartialTransaction, PartialTxOutput, Transaction, TxInput, tx_from_any
+from electrum_mona.logging import console_stderr_handler
+from electrum_mona.lnchannel import ChannelState, Channel
+from electrum_mona.util import TxMinedInfo
+from electrum_mona.address_synchronizer import TX_HEIGHT_LOCAL
+from electrum_mona.lnsweep import SweepInfo
+from electrum_mona.transaction import PartialTransaction, PartialTxOutput, Transaction, TxInput, tx_from_any
 
 from . import ElectrumTestCase
 from .lnhelpers import create_test_channels
@@ -209,7 +209,7 @@ class TestChannel(ElectrumTestCase):
         self.assertEqual(bob_channel.included_htlcs(REMOTE, RECEIVED, 0), [])
         self.assertEqual(bob_channel.included_htlcs(REMOTE, RECEIVED, 1), [])
 
-        from electrum.lnutil import extract_ctn_from_tx_and_chan
+        from electrum_mona.lnutil import extract_ctn_from_tx_and_chan
         tx0 = str(alice_channel.force_close_tx())
         self.assertEqual(alice_channel.get_oldest_unrevoked_ctn(LOCAL), 0)
         self.assertEqual(extract_ctn_from_tx_and_chan(alice_channel.force_close_tx(), alice_channel), 0)

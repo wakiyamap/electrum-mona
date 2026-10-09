@@ -6,13 +6,13 @@ from typing import Optional
 import asyncio
 import inspect
 
-import electrum
-from electrum.wallet_db import WalletDBUpgrader, WalletDB, WalletRequiresUpgrade, WalletRequiresSplit
-from electrum.wallet import Wallet
-from electrum import constants
-from electrum import util
-from electrum.plugin import Plugins
-from electrum.simple_config import SimpleConfig
+import electrum_mona
+from electrum_mona.wallet_db import WalletDBUpgrader, WalletDB, WalletRequiresUpgrade, WalletRequiresSplit
+from electrum_mona.wallet import Wallet
+from electrum_mona import constants
+from electrum_mona import util
+from electrum_mona.plugin import Plugins
+from electrum_mona.simple_config import SimpleConfig
 
 from . import as_testnet, as_regtest
 from .test_wallet import WalletTestCase
@@ -343,7 +343,7 @@ class TestStorageUpgrade(WalletTestCase):
 
 ##########
 
-    plugins: 'electrum.plugin.Plugins'
+    plugins: 'electrum_mona.plugin.Plugins'
 
     def setUp(self):
         super().setUp()

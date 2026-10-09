@@ -8,21 +8,21 @@ from decimal import Decimal
 from os import urandom
 import shutil
 
-import electrum
-from electrum.commands import Commands, eval_bool
-from electrum import storage, wallet
-from electrum.lnutil import RECEIVED, channel_id_from_funding_tx
-from electrum.lnworker import RecvMPPResolution
-from electrum.wallet import Abstract_Wallet
-from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
-from electrum.simple_config import SimpleConfig
-from electrum.submarine_swaps import SwapOffer, SwapFees, NostrTransport
-from electrum.transaction import Transaction, TxOutput, tx_from_any
-from electrum.util import UserFacingException, NotEnoughFunds
-from electrum.crypto import sha256
-from electrum.bolt11 import decode_bolt11_invoice
-from electrum.daemon import Daemon
-from electrum import json_db
+import electrum_mona
+from electrum_mona.commands import Commands, eval_bool
+from electrum_mona import storage, wallet
+from electrum_mona.lnutil import RECEIVED, channel_id_from_funding_tx
+from electrum_mona.lnworker import RecvMPPResolution
+from electrum_mona.wallet import Abstract_Wallet
+from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.submarine_swaps import SwapOffer, SwapFees, NostrTransport
+from electrum_mona.transaction import Transaction, TxOutput, tx_from_any
+from electrum_mona.util import UserFacingException, NotEnoughFunds
+from electrum_mona.crypto import sha256
+from electrum_mona.bolt11 import decode_bolt11_invoice
+from electrum_mona.daemon import Daemon
+from electrum_mona import json_db
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest
@@ -170,7 +170,7 @@ class TestCommands(ElectrumTestCase):
             await cmds.decrypt(pubkey, ciphertext+"trailinggarbage", wallet=wallet)
 
     def test_format_satoshis(self):
-        format_satoshis = electrum.commands.format_satoshis
+        format_satoshis = electrum_mona.commands.format_satoshis
         # input type is highly polymorphic:
         self.assertEqual(format_satoshis(None), None)
         self.assertEqual(format_satoshis(1), "0.00000001")
@@ -196,11 +196,11 @@ class TestCommandsTestnet(ElectrumTestCase):
         shutil.copytree(os.path.join(os.path.dirname(__file__), "fiat_fx_data"), os.path.join(self.electrum_path, "cache"))
         self.config.FX_EXCHANGE = "BitFinex"
         self.config.FX_CURRENCY = "EUR"
-        self._default_default_timezone = electrum.util.DEFAULT_TIMEZONE
-        electrum.util.DEFAULT_TIMEZONE = datetime.timezone.utc
+        self._default_default_timezone = electrum_mona.util.DEFAULT_TIMEZONE
+        electrum_mona.util.DEFAULT_TIMEZONE = datetime.timezone.utc
 
     def tearDown(self):
-        electrum.util.DEFAULT_TIMEZONE = self._default_default_timezone
+        electrum_mona.util.DEFAULT_TIMEZONE = self._default_default_timezone
         super().tearDown()
 
     async def asyncSetUp(self):
@@ -733,7 +733,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         assert await cmds.export_lightning_preimage(payment_hash=payment_hash.hex(), wallet=w) == preimage.hex()
         assert await cmds.export_lightning_preimage(payment_hash=os.urandom(32).hex(), wallet=w) is None
 
-    @mock.patch('electrum.commands.LN_P2P_NETWORK_TIMEOUT', 0.001)
+    @mock.patch('electrum_mona.commands.LN_P2P_NETWORK_TIMEOUT', 0.001)
     async def test_add_peer(self, *mock_args):
         w = restore_wallet_from_text__for_unittest(
             'disagree rug lemon bean unaware square alone beach tennis exhibit fix mimic',

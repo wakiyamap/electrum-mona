@@ -10,20 +10,20 @@ import asyncio
 from unittest import mock
 from pathlib import Path
 
-from electrum.storage import WalletStorage
-from electrum.wallet_db import FINAL_SEED_VERSION
-from electrum.wallet import (Abstract_Wallet, Standard_Wallet, create_new_wallet,
+from electrum_mona.storage import WalletStorage
+from electrum_mona.wallet_db import FINAL_SEED_VERSION
+from electrum_mona.wallet import (Abstract_Wallet, Standard_Wallet, create_new_wallet,
                              Imported_Wallet, Wallet)
-from electrum.exchange_rate import ExchangeBase, FxThread
-from electrum.util import TxMinedInfo, InvalidPassword
-from electrum.bitcoin import COIN
-from electrum.wallet_db import WalletDB, JsonDB
-from electrum.simple_config import SimpleConfig
-from electrum import util, storage
-from electrum.daemon import Daemon
-from electrum.invoices import PR_UNPAID, PR_PAID, PR_UNCONFIRMED
-from electrum.transaction import tx_from_any
-from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum_mona.exchange_rate import ExchangeBase, FxThread
+from electrum_mona.util import TxMinedInfo, InvalidPassword
+from electrum_mona.bitcoin import COIN
+from electrum_mona.wallet_db import WalletDB, JsonDB
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona import util, storage
+from electrum_mona.daemon import Daemon
+from electrum_mona.invoices import PR_UNPAID, PR_PAID, PR_UNCONFIRMED
+from electrum_mona.transaction import tx_from_any
+from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest
@@ -253,7 +253,7 @@ class TestHistoryExport(ElectrumTestCase):
         self.patch_timezone.stop()
         time.tzset()
 
-    @mock.patch('electrum.wallet.run_hook')
+    @mock.patch('electrum_mona.wallet.run_hook')
     @mock.patch.object(storage.WalletStorage, 'write')
     @mock.patch.object(storage.WalletStorage, 'append')
     async def test_export_history_to_file(self, _mock_append, _mock_write, mock_run_hook):

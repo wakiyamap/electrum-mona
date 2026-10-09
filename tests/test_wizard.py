@@ -1,18 +1,18 @@
 import os
 
-from electrum import SimpleConfig
-from electrum.interface import ServerAddr
-from electrum.keystore import bip44_derivation, Hardware_KeyStore, KeyStore, BIP32_KeyStore
-from electrum.network import NetworkParameters, ProxySettings
-from electrum.plugin import Plugins, DeviceInfo, Device
-from electrum.wizard import ServerConnectWizard, NewWalletWizard, WizardViewState, KeystoreWizard
-from electrum.daemon import Daemon
-from electrum.wallet import Abstract_Wallet, Deterministic_Wallet
-from electrum import util
-from electrum import slip39
-from electrum.bip32 import KeyOriginInfo
-from electrum import keystore
-from electrum.storage import WalletStorage
+from electrum_mona import SimpleConfig
+from electrum_mona.interface import ServerAddr
+from electrum_mona.keystore import bip44_derivation, Hardware_KeyStore, KeyStore, BIP32_KeyStore
+from electrum_mona.network import NetworkParameters, ProxySettings
+from electrum_mona.plugin import Plugins, DeviceInfo, Device
+from electrum_mona.wizard import ServerConnectWizard, NewWalletWizard, WizardViewState, KeystoreWizard
+from electrum_mona.daemon import Daemon
+from electrum_mona.wallet import Abstract_Wallet, Deterministic_Wallet
+from electrum_mona import util
+from electrum_mona import slip39
+from electrum_mona.bip32 import KeyOriginInfo
+from electrum_mona import keystore
+from electrum_mona.storage import WalletStorage
 
 from . import ElectrumTestCase
 from .test_wallet_vertical import UNICODE_HORROR, WalletIntegrityHelper

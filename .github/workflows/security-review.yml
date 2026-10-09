@@ -74,7 +74,7 @@ jobs:
           sudo apt-get -y install automake libtool
           ./contrib/make_libsecp256k1.sh
           mkdir -p contrib/_saved_secp256k1_build
-          cp electrum/libsecp256k1.so.* contrib/_saved_secp256k1_build/
+          cp electrum_mona/libsecp256k1.so.* contrib/_saved_secp256k1_build/
 
       - name: Install Qt/QML runtime deps
         run: |
