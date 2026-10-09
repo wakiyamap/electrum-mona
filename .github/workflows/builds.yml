@@ -1,8 +1,7 @@
 name: builds
 
 on:
-  schedule:
-    - cron: '30 2 * * *'   # 02:30 UTC daily
+  # Electrum-MONA: no nightly builds (upstream runs this on a daily schedule). Run it by hand.
   workflow_dispatch:
     inputs:
       target:
