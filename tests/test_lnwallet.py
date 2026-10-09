@@ -639,11 +639,16 @@ class TestChannelBackup(ToyServerTestCase):
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
+        # Electrum-MONA: the feerate floors (FEERATE_DEFAULT_RELAY, FEERATE_PER_KW_MIN_RELAY_LIGHTNING) are 100x
+        # upstream's, so scale the feerates of the toy network too:
+        # - its fee estimates. Otherwise a commitment tx would always pay more than the target feerate,
+        #   and its anchors would never get claimed.
+        # - the min relay feerate of the server, which is also the increment it requires for mempool
+        #   replacement. Otherwise replacements that upstream's tests expect to get rejected are accepted,
+        #   and the other wallet can then fail to fetch the replaced tx ("unknown txid").
+        self.server.min_relay_feerate = 100 * self.server.min_relay_feerate
         self.alice_instance = await self.create_instance("alice")
         self.bob_instance = await self.create_instance("bob")
-        # Electrum-MONA: the feerate floors (FEERATE_DEFAULT_RELAY, FEERATE_PER_KW_MIN_RELAY_LIGHTNING) are 100x
-        # upstream's, so scale the fee estimates of the toy network too. Otherwise a commitment tx
-        # would always pay more than the target feerate, and its anchors would never get claimed.
         for instance in (self.alice_instance, self.bob_instance):
             for target in FEE_ETA_TARGETS[:-1]:
                 instance.network.fee_estimates.set_data(target, 100 * 50_000 // target)
