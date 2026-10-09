@@ -8,10 +8,22 @@ chain parameters by default (see tests/__init__.py).
 
 What is specific to Monacoin is tested with the real parameters, in
 tests/test_monacoin.py, using `monacoin_params()`.
+
+This only covers the chain parameters (electrum_mona/constants.py). Electrum-MONA also
+changes constants that upstream tests depend on. Those tests are adapted as follows:
+- BIP21 URI scheme: 'bitcoin:' -> 'monacoin:'  (test_util.py, test_payment_identifier.py)
+- magic of signed messages: expected signatures  (test_bitcoin.py, test_commands.py)
+- proof-of-work, difficulty: Monacoin header in TestVerifyHeader  (test_blockchain.py)
+- lightning block counts, e.g. MIN_FINAL_CLTV_DELTA_ACCEPTED: cltv values  (test_lnpeer.py)
+- lightning min feerate: the feerates the tests use  (test_lnchannel.py, test_lnwallet.py)
+- min relay feerate: tests with vectors that have upstream's feerate baked in run with
+  `upstream_relay_feerate()`  (test_wallet_vertical.py, test_fee_policy.py)
 """
 import contextlib
+from unittest import mock
 
 from electrum_mona import constants
+from electrum_mona import fee_policy
 
 _UPSTREAM = {
     constants.BitcoinMainnet: dict(
@@ -80,3 +92,29 @@ def monacoin_params():
         yield
     finally:
         use_upstream_bitcoin_params()
+
+
+class MonacoinParamsMixin:
+    """Mixin for test cases that run with the real (shipped) chain parameters:
+        class TestFoo(MonacoinParamsMixin, ElectrumTestCase): ...
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        use_monacoin_params()
+
+    @classmethod
+    def tearDownClass(cls):
+        use_upstream_bitcoin_params()
+        super().tearDownClass()
+
+
+def upstream_relay_feerate():
+    """Decorator / context manager to run a test with the default min relay feerate of upstream.
+
+    For tests of logic we share with upstream (fee bumping, mempool histogram), whose
+    vectors (e.g. signed transactions) have that feerate baked in.
+    The Monacoin fee constants are tested in tests/test_monacoin.py.
+    """
+    return mock.patch.object(fee_policy, "FEERATE_DEFAULT_RELAY", 1000)

@@ -1,12 +1,31 @@
 from pathlib import Path
+import hashlib
+import json
 import os
+from unittest import mock
 
 from electrum_mona import constants
 from electrum_mona.simple_config import SimpleConfig
 from electrum_mona.blockchain import Blockchain, deserialize_header, hash_header, InvalidHeader, BlockchainManager
+from electrum_mona.blockchain import (serialize_header, pow_hash_header, MissingHeader, HEADER_SIZE, CHUNK_SIZE,
+                                      MAX_TARGET, LYRA2REV2_FORK_HEIGHT, DGWV3_PAST_BLOCKS, DGWV3_TARGET_SPACING)
+from electrum_mona.bitcoin import hash_encode
+from electrum_mona.scrypt import scrypt_1024_1_1_80
 from electrum_mona.util import bfh
 
 from . import ElectrumTestCase
+from .upstream_params import MonacoinParamsMixin
+
+
+def pin_mainnet_checkpoints(test_case: ElectrumTestCase, num_chunks: int = 1299) -> None:
+    """The Monacoin header vectors below were made when the checkpoints covered 1299 chunks.
+    Stick to those, so that the tests keep working when checkpoints.json gets extended.
+    """
+    checkpoints = constants.BitcoinMainnet.CHECKPOINTS
+    assert len(checkpoints) >= num_chunks, len(checkpoints)
+    patcher = mock.patch.object(constants.BitcoinMainnet, "_cached_checkpoints", checkpoints[:num_chunks])
+    patcher.start()
+    test_case.addCleanup(patcher.stop)
 
 
 class TestBlockchain(ElectrumTestCase):
@@ -426,14 +445,17 @@ class TestBlockchain(ElectrumTestCase):
 
 class TestVerifyHeader(ElectrumTestCase):
 
-    # Data for Bitcoin block header #100.
-    valid_header = "0100000095194b8567fe2e8bbda931afd01a7acd399b9325cb54683e64129bcd00000000660802c98f18fd34fd16d61c63cf447568370124ac5f3be626c2e1c3c9f0052d19a76949ffff001d33f3c25d"
-    target = Blockchain.bits_to_target(0x1d00ffff)
-    prev_hash = "00000000cd9b12643e6854cb25939b39cd7a1ad0af31a9bd8b2efe67854b1995"
+    # Data for Monacoin block header #2618875. (proof-of-work: Lyra2REv2)
+    # note: this height is above the checkpoints. Most headers below them are not pow-checked,
+    #       see TestMonacoinHeaders.
+    valid_header = "000000207ef097f85c42eae5e53551c95a30c336a86b3958e9b2c99a44a16b4a4e5efb90c31ab1ae02f56e9391b2427f02f418410d864df97ff869d0ab6f03f0971960528a8f41620c6d041a88c2bf8b"
+    target = Blockchain.bits_to_target(0x1a046d0c)
+    prev_hash = "90fb5e4e4a6ba1449ac9b2e958396ba836c3305ac95135e5e5ea425cf897f07e"
 
     def setUp(self):
         super().setUp()
-        self.header = deserialize_header(bfh(self.valid_header), 100)
+        pin_mainnet_checkpoints(self)
+        self.header = deserialize_header(bfh(self.valid_header), 2618875)
 
     def test_valid_header(self):
         Blockchain.verify_header(self.header, self.prev_hash, self.target)
@@ -449,10 +471,323 @@ class TestVerifyHeader(ElectrumTestCase):
 
     def test_target_mismatch(self):
         with self.assertRaises(InvalidHeader):
-            other_target = Blockchain.bits_to_target(0x1d00eeee)
+            other_target = Blockchain.bits_to_target(0x1b046d0c)
             Blockchain.verify_header(self.header, self.prev_hash, other_target)
 
     def test_insufficient_pow(self):
         with self.assertRaises(InvalidHeader):
             self.header["nonce"] = 42
             Blockchain.verify_header(self.header, self.prev_hash, self.target)
+
+
+class TestMonacoinHeaders(MonacoinParamsMixin, ElectrumTestCase):
+    """Proof-of-work (scrypt, Lyra2REv2) and difficulty (DGWv3) of real mainnet headers,
+    on top of the shipped checkpoints. The headers are in tests/monacoin-headers.json.
+    """
+
+    FIRST = 2618784  # first height above the checkpoints
+    TIP = 2618875  # last header we have
+    TIP_HASH = "6dbe95e2e280c8e46229c567fa1edf8c80d7db84af9fdbf6f9a4baf032742f3c"  # as seen on block explorers
+    # the first headers above the checkpoints are not pow-checked, see Blockchain.verify_header
+    FIRST_CHECKED = FIRST + DGWV3_PAST_BLOCKS + 1
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        with open(os.path.join(os.path.dirname(__file__), "monacoin-headers.json")) as f:
+            vectors = json.load(f)
+        cls.raw_headers = {2015: bfh(vectors["2015"]), 461663: bfh(vectors["461663"])}
+        for i, raw_header in enumerate(vectors["2618784"]):
+            cls.raw_headers[cls.FIRST + i] = bfh(raw_header)
+        assert max(cls.raw_headers) == cls.TIP
+
+    def setUp(self):
+        super().setUp()
+        pin_mainnet_checkpoints(self)
+        self.config = SimpleConfig({'electrum_path': self.electrum_path})
+        self.bc_mgr = BlockchainManager.from_config(self.config)
+        self.chain = self.bc_mgr.get_best_chain()
+
+    def header(self, height: int, **changes) -> dict:
+        header = deserialize_header(self.raw_headers[height], height)
+        header.update(changes)
+        return header
+
+    def headers(self, first: int = FIRST, last: int = TIP) -> dict:
+        return {height: self.header(height) for height in range(first, last + 1)}
+
+    def header_with_bad_nonce(self, height: int, **changes) -> dict:
+        return self.header(height, nonce=self.header(height)['nonce'] ^ 1, **changes)
+
+    def connect(self, first: int, last: int) -> None:
+        for height in range(first, last + 1):
+            header = self.header(height)
+            self.assertTrue(self.chain.can_connect(header), msg=height)
+            self.chain.save_header(header)
+
+    def test_vectors_are_anchored_to_the_checkpoints(self):
+        checkpoints = constants.net.CHECKPOINTS
+        self.assertEqual(self.FIRST, len(checkpoints) * CHUNK_SIZE)
+        self.assertEqual(self.FIRST - 1, constants.net.max_checkpoint())
+        # a checkpoint is (hash of the last header of the chunk, target of that header)
+        for height in (2015, 461663):
+            header = self.header(height)
+            cp_hash, cp_target = checkpoints[height // CHUNK_SIZE]
+            self.assertEqual(cp_hash, hash_header(header))
+            self.assertEqual(cp_target, Blockchain.bits_to_target(header['bits']))
+        prev_hash = checkpoints[-1][0]
+        for height in range(self.FIRST, self.TIP + 1):
+            header = self.header(height)
+            self.assertEqual(prev_hash, header['prev_block_hash'], msg=height)
+            prev_hash = hash_header(header)
+        self.assertEqual(self.TIP_HASH, prev_hash)
+
+    def test_headers_file_starts_at_the_checkpoints(self):
+        self.assertEqual(self.FIRST - 1, self.chain.height())
+        self.assertEqual(constants.net.CHECKPOINTS[-1][0], self.chain.get_hash(self.FIRST - 1))
+        self.assertEqual(constants.net.GENESIS, self.chain.get_hash(0))
+
+    def test_max_target(self):
+        # powLimit of Monacoin Core
+        self.assertEqual(0x00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, MAX_TARGET)
+        self.assertEqual(0x1e0fffff, Blockchain.target_to_bits(MAX_TARGET))
+        self.assertEqual(0x00000fffff << 216, Blockchain.bits_to_target(0x1e0fffff))  # compact form is less precise
+
+    def test_pow_hash_satisfies_the_target(self):
+        """The hash that has to satisfy the target is not the block hash, but the scrypt hash
+        of the header (below height 450000), or its Lyra2REv2 hash."""
+        self.assertEqual(450000, LYRA2REV2_FORK_HEIGHT)
+        for height in sorted(self.raw_headers):
+            header = self.header(height)
+            target = Blockchain.bits_to_target(header['bits'])
+            self.assertLessEqual(int(pow_hash_header(header), 16), target, msg=height)
+        # the wrong algorithm does not result in a valid proof-of-work
+        for height, wrong_height in ((2015, LYRA2REV2_FORK_HEIGHT), (self.TIP, LYRA2REV2_FORK_HEIGHT - 1)):
+            header = self.header(height, block_height=wrong_height)
+            target = Blockchain.bits_to_target(header['bits'])
+            self.assertGreater(int(pow_hash_header(header), 16), target, msg=height)
+        # the block hash is not good enough either. (it was for bitcoin)
+        header = self.header(self.TIP)
+        self.assertGreater(int(hash_header(header), 16), Blockchain.bits_to_target(header['bits']))
+
+    def test_pow_hash_below_the_pow_limit_is_not_enough(self):
+        # with this nonce the pow hash is below the pow limit (min difficulty), but far above the target of the header
+        header = self.header(self.TIP, nonce=1370737)
+        target = self.chain.get_target(self.TIP, self.headers())
+        self.assertEqual("00000973eab9b66ab299a0bd44018478d44ff25b199f0fb3a9328b56eb1e955d", pow_hash_header(header))
+        self.assertTrue(target < int(pow_hash_header(header), 16) < MAX_TARGET)
+        with self.assertRaises(InvalidHeader):
+            Blockchain.verify_header(header, header['prev_block_hash'], target)
+        Blockchain.verify_header(self.header(self.TIP), header['prev_block_hash'], target)
+
+    def test_pow_hash_scrypt_implementations_agree(self):
+        """blockchain.py uses hashlib.scrypt, and falls back to electrum_mona/scrypt.py (pure python)."""
+        header = self.header(2015)
+        raw_header = self.raw_headers[2015]
+        pow_hash = hash_encode(scrypt_1024_1_1_80(raw_header))
+        self.assertLessEqual(int(pow_hash, 16), Blockchain.bits_to_target(header['bits']))
+        self.assertEqual(pow_hash, pow_hash_header(header))
+        for exc in (AttributeError, ValueError):  # hashlib built without scrypt support
+            with mock.patch.object(hashlib, "scrypt", side_effect=exc, create=True) as mock_scrypt:
+                self.assertEqual(pow_hash, pow_hash_header(header))
+                mock_scrypt.assert_called_once()
+
+    def test_verify_header_scrypt(self):
+        header = self.header(2015)
+        prev_hash = header['prev_block_hash']
+        target = self.chain.get_target(2015)
+        Blockchain.verify_header(header, prev_hash, target, expected_header_hash=self.chain.get_hash(2015))
+        with self.assertRaises(InvalidHeader):  # insufficient pow
+            Blockchain.verify_header(self.header_with_bad_nonce(2015), prev_hash, target)
+        with self.assertRaises(InvalidHeader):  # bits mismatch
+            Blockchain.verify_header(header, prev_hash, MAX_TARGET)
+        with self.assertRaises(InvalidHeader):
+            Blockchain.verify_header(header, "00" * 32, target)
+
+    def test_verify_header_lyra2rev2_below_checkpoints(self):
+        header = self.header(461663)
+        prev_hash = header['prev_block_hash']
+        target = self.chain.get_target(461663)
+        Blockchain.verify_header(header, prev_hash, target, expected_header_hash=self.chain.get_hash(461663))
+        with self.assertRaises(InvalidHeader):  # insufficient pow
+            Blockchain.verify_header(self.header_with_bad_nonce(461663), prev_hash, target)
+        with self.assertRaises(InvalidHeader):  # bits mismatch
+            Blockchain.verify_header(header, prev_hash, MAX_TARGET)
+
+    def test_get_target(self):
+        # expected values are from Electrum-MONA 4.2.1
+        chain = self.chain
+        # before DGWv3, with checkpoint
+        self.assertEqual(65339010432214603900175979833807329994044402934458085644623414103638016, chain.get_target(2015))
+        # before DGWv3, without checkpoint
+        self.assertEqual(0, chain.get_target(2016))
+        # after DGWv3, with checkpoint
+        self.assertEqual(62635231089126922960074598435273835921110428291665699134377033728, chain.get_target(461663))
+        # after DGWv3, without checkpoint
+        self.assertEqual(0, chain.get_target(461664))
+        # after DGWv3, after the checkpoints. The headers are not saved yet.
+        self.assertEqual(7112266753876343510151023106557578774485394364773876493401627,
+                         chain.get_target(self.TIP, self.headers()))
+        self.assertEqual(self.header(self.TIP)['bits'],
+                         Blockchain.target_to_bits(7112266753876343510151023106557578774485394364773876493401627))
+
+    def test_get_target_dgwv3_matches_the_bits_of_real_headers(self):
+        headers = self.headers()
+        # DGWv3 needs the previous 24 headers, which the checkpoints do not have
+        for height in range(self.FIRST, self.FIRST + DGWV3_PAST_BLOCKS):
+            self.assertEqual(0, self.chain.get_target(height, headers), msg=height)
+        for height in range(self.FIRST + DGWV3_PAST_BLOCKS, self.TIP + 1):
+            target = self.chain.get_target(height, headers)
+            self.assertEqual(headers[height]['bits'], Blockchain.target_to_bits(target), msg=height)
+        # one of the 24 headers is missing
+        with self.assertRaises(MissingHeader):
+            self.chain.get_target(self.TIP, self.headers(self.TIP - DGWV3_PAST_BLOCKS + 1))
+
+    def _dgwv3_window(self, height: int, *, bits: int, spacing: int) -> dict:
+        """The 24 headers before `height`: same bits, `spacing` seconds apart."""
+        return {height - 1 - i: {'bits': bits, 'timestamp': 1_700_000_000 - i * spacing}
+                for i in range(DGWV3_PAST_BLOCKS)}
+
+    def test_get_target_dgwv3_timespan(self):
+        """new target = (average of the last 24 targets) * (time the last 24 blocks took) / (24 * 90 seconds),
+        where the timespan is limited to [1/3, 3] of what it should have been."""
+        self.assertEqual(90, DGWV3_TARGET_SPACING)
+        height = self.FIRST + 1000
+        bits = 0x1a046d0c
+        target = Blockchain.bits_to_target(bits)
+        # blocks on schedule. (there are only 23 intervals between 24 blocks)
+        window = self._dgwv3_window(height, bits=bits, spacing=90)
+        self.assertEqual(target * 23 // 24, self.chain.get_target(height, window))
+        # blocks twice as fast
+        window = self._dgwv3_window(height, bits=bits, spacing=45)
+        self.assertEqual(target * 23 // 48, self.chain.get_target(height, window))
+        # the target cannot fall to less than a third
+        for spacing in (0, 1, 30):
+            window = self._dgwv3_window(height, bits=bits, spacing=spacing)
+            self.assertEqual(target // 3, self.chain.get_target(height, window))
+        # the target cannot more than triple
+        for spacing in (300, 3600):
+            window = self._dgwv3_window(height, bits=bits, spacing=spacing)
+            self.assertEqual(target * 3, self.chain.get_target(height, window))
+        # and it never exceeds the pow limit
+        window = self._dgwv3_window(height, bits=0x1e0fffff, spacing=3600)
+        self.assertEqual(MAX_TARGET, self.chain.get_target(height, window))
+
+    def test_get_target_dgwv3_starts_24_blocks_after_the_fork(self):
+        """As in Monacoin Core: min difficulty until 24 headers are above the Lyra2REv2 fork height."""
+        bits = 0x1c009842
+        target = Blockchain.bits_to_target(bits)
+        fork_chunk = LYRA2REV2_FORK_HEIGHT // CHUNK_SIZE
+        # pretend that the checkpoints end right before the fork
+        with mock.patch.object(constants.BitcoinMainnet, "_cached_checkpoints", constants.net.CHECKPOINTS[:fork_chunk]):
+            for height in (LYRA2REV2_FORK_HEIGHT, LYRA2REV2_FORK_HEIGHT + DGWV3_PAST_BLOCKS):
+                window = self._dgwv3_window(height, bits=bits, spacing=90)
+                self.assertEqual(MAX_TARGET, self.chain.get_target(height, window), msg=height)
+            height = LYRA2REV2_FORK_HEIGHT + DGWV3_PAST_BLOCKS + 1
+            window = self._dgwv3_window(height, bits=bits, spacing=90)
+            self.assertEqual(target * 23 // 24, self.chain.get_target(height, window))
+
+    def test_connect_headers_above_checkpoints(self):
+        self.connect(self.FIRST, self.TIP)
+        self.assertEqual(self.TIP, self.chain.height())
+        self.assertEqual(self.TIP_HASH, self.chain.get_hash(self.TIP))
+        self.assertEqual(self.header(self.TIP), self.chain.header_at_tip())
+        # now the targets come from the headers file
+        for height in range(self.FIRST + DGWV3_PAST_BLOCKS, self.TIP + 1):
+            target = self.chain.get_target(height)
+            self.assertEqual(self.header(height)['bits'], Blockchain.target_to_bits(target), msg=height)
+        # competing chains are compared by their length. (the checkpoints do not have the targets
+        # that would be needed to calculate the chainwork)
+        self.assertEqual(self.TIP, self.chain.get_chainwork())
+        self.assertEqual(self.FIRST, self.chain.get_chainwork(self.FIRST))
+
+    def test_can_connect(self):
+        self.connect(self.FIRST, self.TIP - 1)
+        header = self.header(self.TIP)
+        self.assertTrue(self.chain.can_connect(header))
+        self.assertIs(self.chain, self.bc_mgr.can_connect(header))
+        # insufficient pow
+        self.assertFalse(self.chain.can_connect(self.header_with_bad_nonce(self.TIP)))
+        # the bits are not what DGWv3 says
+        self.assertFalse(self.chain.can_connect(self.header(self.TIP, bits=header['bits'] + 1)))
+        self.assertFalse(self.chain.can_connect(self.header(self.TIP, bits=0x1e0fffff)))
+        # does not build on our tip
+        self.assertFalse(self.chain.can_connect(self.header(self.TIP, prev_block_hash=self.chain.get_hash(self.TIP - 2))))
+        self.assertFalse(self.chain.can_connect(self.header(self.TIP, block_height=self.TIP + 1)))
+        self.assertFalse(self.chain.can_connect(self.header(self.TIP - 1)))
+        self.assertTrue(self.chain.can_connect(self.header(self.TIP - 1), check_height=False))
+
+    def test_headers_that_are_not_pow_checked(self):
+        """The checkpoints only have the target of the last header of each chunk, and DGWv3 needs 24
+        previous headers: there is no pow check for the other headers below the checkpoints, and for
+        the first 25 above them. Their hashes are still checked (prev_hash, checkpoints)."""
+        # below the checkpoints: the last header of a chunk is checked. (see test_verify_header_scrypt)
+        # Let's pretend it was the one before.
+        header = self.header_with_bad_nonce(2015, block_height=2014)
+        self.assertEqual(0, self.chain.get_target(2014))
+        Blockchain.verify_header(header, header['prev_block_hash'], 0)
+        with self.assertRaises(InvalidHeader):
+            Blockchain.verify_header(header, "00" * 32, 0)
+        with self.assertRaises(InvalidHeader):
+            Blockchain.verify_header(header, header['prev_block_hash'], 0,
+                                     expected_header_hash=hash_header(self.header(2015)))
+        # above the checkpoints
+        headers = self.headers()
+        self.assertEqual(self.FIRST + 25, self.FIRST_CHECKED)
+        for height in (self.FIRST, self.FIRST + 1, self.FIRST_CHECKED - 1):
+            header = self.header_with_bad_nonce(height)
+            target = self.chain.get_target(height, headers)
+            Blockchain.verify_header(header, header['prev_block_hash'], target)
+            with self.assertRaises(InvalidHeader):
+                Blockchain.verify_header(header, "00" * 32, target)
+        header = self.header_with_bad_nonce(self.FIRST_CHECKED)
+        target = self.chain.get_target(self.FIRST_CHECKED, headers)
+        with self.assertRaises(InvalidHeader):
+            Blockchain.verify_header(header, header['prev_block_hash'], target)
+        Blockchain.verify_header(self.header(self.FIRST_CHECKED), header['prev_block_hash'], target)
+
+    def test_no_pow_check_on_testnet(self):
+        header = self.header_with_bad_nonce(self.TIP)
+        # note: do not let the testnet checkpoints get cached, regtest would inherit them
+        with mock.patch.object(constants.BitcoinTestnet, "_cached_checkpoints", []):
+            constants.BitcoinTestnet.set_as_network()
+            try:
+                self.assertEqual(0, self.chain.get_target(self.TIP, self.headers()))
+                Blockchain.verify_header(header, header['prev_block_hash'], 0)
+                with self.assertRaises(InvalidHeader):
+                    Blockchain.verify_header(header, "00" * 32, 0)
+            finally:
+                constants.BitcoinMainnet.set_as_network()
+        with self.assertRaises(InvalidHeader):
+            Blockchain.verify_header(header, header['prev_block_hash'], self.chain.get_target(self.TIP, self.headers()))
+
+    def _chunk(self, *, last: int = TIP, bad_nonce_at: int = None) -> bytes:
+        headers = self.headers(self.FIRST, last)
+        if bad_nonce_at is not None:
+            headers[bad_nonce_at] = self.header_with_bad_nonce(bad_nonce_at)
+        return b"".join(serialize_header(headers[height]) for height in sorted(headers))
+
+    def test_verify_chunk(self):
+        index = self.FIRST // CHUNK_SIZE
+        self.chain.verify_chunk(index, self._chunk())
+        # insufficient pow
+        for height in (self.FIRST_CHECKED, self.TIP - 10, self.TIP):
+            with self.assertRaises(InvalidHeader, msg=height):
+                self.chain.verify_chunk(index, self._chunk(bad_nonce_at=height))
+        # the first headers are not pow-checked, but the next header commits to their hash
+        for height in (self.FIRST, self.FIRST_CHECKED - 1):
+            with self.assertRaises(InvalidHeader, msg=height):
+                self.chain.verify_chunk(index, self._chunk(bad_nonce_at=height))
+            self.chain.verify_chunk(index, self._chunk(last=height, bad_nonce_at=height))
+        # does not connect to the checkpoints
+        with self.assertRaises(InvalidHeader):
+            self.chain.verify_chunk(index, self._chunk()[HEADER_SIZE:])
+
+    def test_connect_chunk(self):
+        index = self.FIRST // CHUNK_SIZE
+        self.assertFalse(self.chain.connect_chunk(index, self._chunk(bad_nonce_at=self.TIP)))
+        self.assertEqual(self.FIRST - 1, self.chain.height())
+        self.assertTrue(self.chain.connect_chunk(index, self._chunk()))
+        self.assertEqual(self.TIP, self.chain.height())
+        self.assertEqual(self.TIP_HASH, self.chain.get_hash(self.TIP))
+        self.assertEqual(self.header(self.TIP), self.chain.read_header(self.TIP))
