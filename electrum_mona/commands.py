@@ -1419,13 +1419,13 @@ class Commands(Logger):
         arg:decimal:amount:Optional requested amount (in btc)
         arg:str:memo:Optional description of the invoice
         arg:int:expiry:Optional expiry in seconds (default: 3600s)
-        arg:int:min_final_cltv_expiry_delta:Optional min final cltv expiry delta (default: 294 blocks)
+        arg:int:min_final_cltv_expiry_delta:Optional min final cltv expiry delta (default: 1920 blocks)
         """
         assert len(payment_hash) == 64, f"Invalid payment hash length: {len(payment_hash)} != 64"
         assert not wallet.lnworker.get_payment_info(bfh(payment_hash), direction=RECEIVED), "Payment hash already used!"
         assert payment_hash not in wallet.lnworker.dont_expire_htlcs, "Payment hash already used!"
         assert wallet.lnworker.get_preimage(bfh(payment_hash)) is None, "Already got a preimage for this payment hash!"
-        assert MIN_FINAL_CLTV_DELTA_ACCEPTED < min_final_cltv_expiry_delta < 576, "Use a sane min_final_cltv_expiry_delta value"
+        assert MIN_FINAL_CLTV_DELTA_ACCEPTED < min_final_cltv_expiry_delta < 3840, "Use a sane min_final_cltv_expiry_delta value"
         amount = amount if amount and satoshis(amount) > 0 else None  # make amount either >0 or None
         inbound_capacity = wallet.lnworker.num_sats_can_receive()
         assert inbound_capacity > satoshis(amount or 0), \

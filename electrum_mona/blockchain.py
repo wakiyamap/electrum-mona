@@ -436,6 +436,8 @@ class Blockchain(Logger):
         bits = cls.target_to_bits(target)
         if bits != header.get('bits'):
             raise InvalidHeader("bits mismatch: %s vs %s" % (bits, header.get('bits')))
+        # the target that counts is the one encoded in the header (not any target fits in 32 bits)
+        target = cls.bits_to_target(bits)
         _pow_hash = pow_hash_header(header)
         pow_hash_as_num = int.from_bytes(bfh(_pow_hash), byteorder='big')
         if pow_hash_as_num > target:
@@ -782,7 +784,7 @@ class Blockchain(Logger):
             return False
         try:
             target = self.get_target(height, {height: header})
-        except MissingHeader:
+        except (MissingHeader, InvalidHeader):
             return False
         try:
             self.verify_header(header, prev_hash, target)
