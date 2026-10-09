@@ -5,5 +5,5 @@
   "requires_wallet_type": ["2fa"],
   "registers_wallet_type": "2fa",
   "icon":"trustedcoin-status.png",
-  "available_for": ["qt", "cmdline", "qml"]
+  "available_for": ["cmdline"]
 }
