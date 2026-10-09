@@ -158,10 +158,6 @@ class FeePolicy(Logger):
             return _('Low fee')
         elif x == 1:
             return _('In the next block')
-        elif x == 144:
-            return _('Within one day')
-        elif x == 1008:
-            return _("Within one week")
         else:
             return _('Within {} blocks').format(x)
 
