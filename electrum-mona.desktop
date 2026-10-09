@@ -1,0 +1,24 @@
+# If you want Electrum to appear in a Linux app launcher ("start menu"), install this by doing:
+# sudo desktop-file-install electrum-mona.desktop
+# Note: This assumes $HOME/.local/bin is in your $PATH
+
+[Desktop Entry]
+Comment=Lightweight Monacoin Client
+Exec=electrum-mona %u
+GenericName[en_US]=Monacoin Wallet
+GenericName=Monacoin Wallet
+Icon=electrum
+Name[en_US]=Electrum-mona Monacoin Wallet
+Name=Electrum Monacoin Wallet
+Categories=Finance;Network;
+StartupNotify=true
+StartupWMClass=electrum-mona
+Terminal=false
+Type=Application
+MimeType=x-scheme-handler/monacoin;
+Actions=Testnet;
+Keywords=crypto;currency;MONA
+
+[Desktop Action Testnet]
+Exec=electrum-mona --testnet %u
+Name=Testnet mode

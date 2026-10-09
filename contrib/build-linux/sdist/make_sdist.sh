@@ -51,12 +51,12 @@ info "preparing electrum-locale."
 
     VERSION=$("$CONTRIB"/print_electrum_version.py)
     if ([ "$OMIT_UNCLEAN_FILES" = 1 ]); then
-        FINAL_DISTNAME="Electrum-sourceonly-$VERSION.tar.gz"
+        FINAL_DISTNAME="Electrum-MONA-sourceonly-$VERSION.tar.gz"
     else
-        FINAL_DISTNAME="Electrum-$VERSION.tar.gz"
+        FINAL_DISTNAME="Electrum-MONA-$VERSION.tar.gz"
     fi
     if ([ "$OMIT_UNCLEAN_FILES" = 1 ]); then
-        mv "$PY_DISTDIR/Electrum-$VERSION.tar.gz" "$PY_DISTDIR/../$FINAL_DISTNAME"
+        mv "$PY_DISTDIR/Electrum-MONA-$VERSION.tar.gz" "$PY_DISTDIR/../$FINAL_DISTNAME"
         rmdir "$PY_DISTDIR"
     fi
 
@@ -66,7 +66,7 @@ info "preparing electrum-locale."
     cd "$BUILDDIR/dist2"
     tar -xzf "$BUILDDIR/dist1/$FINAL_DISTNAME"
     find -exec touch -h -d '2000-11-11T11:11:11+00:00' {} +
-    GZIP=-n tar --sort=name -czf "$FINAL_DISTNAME" "Electrum-$VERSION/"
+    GZIP=-n tar --sort=name -czf "$FINAL_DISTNAME" "Electrum-MONA-$VERSION/"
     mv "$FINAL_DISTNAME" "$DISTDIR/$FINAL_DISTNAME"
 )
 

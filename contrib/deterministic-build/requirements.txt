@@ -28,6 +28,8 @@ jsonpatch==1.33 \
     --hash=sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c
 jsonpointer==3.0.0 \
     --hash=sha256:2b2d729f2091522d61c3b31f82e11870f60b68f43fbc705cb76bf4b832af59ef
+lyra2re2_hash==1.2.0 \
+    --hash=sha256:5cc17e562a37859cbe3f7ec2825a3a84616c2e482a6fa129dd2f1f731671ab52
 multidict==6.8.0 \
     --hash=sha256:5cd4637ce76312ba1e05eb9c5193fec231f64fee0944e135fa1e951242355b37
 packaging==26.2 \

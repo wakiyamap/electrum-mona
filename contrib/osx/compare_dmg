@@ -35,18 +35,18 @@ DMG_UNSIGNED_UNPACKED="$WORKSPACE/dmg1"
 DMG_RELEASE_UNPACKED="$WORKSPACE/dmg2"
 
 hdiutil attach -mountroot "$WS_VOL1" "$UNSIGNED_DMG"
-cp -r "$WS_VOL1"/Electrum "$DMG_UNSIGNED_UNPACKED"
-hdiutil detach "$WS_VOL1"/Electrum
+cp -r "$WS_VOL1"/Electrum-MONA "$DMG_UNSIGNED_UNPACKED"
+hdiutil detach "$WS_VOL1"/Electrum-MONA
 
 hdiutil attach -mountroot "$WS_VOL2" "$RELEASE_DMG"
-cp -r "$WS_VOL2"/Electrum "$DMG_RELEASE_UNPACKED"
-hdiutil detach "$WS_VOL2"/Electrum
+cp -r "$WS_VOL2"/Electrum-MONA "$DMG_RELEASE_UNPACKED"
+hdiutil detach "$WS_VOL2"/Electrum-MONA
 
 # copy signatures from RELEASE_DMG to UNSIGNED_DMG
 echo "Extracting signatures from release app..."
-QUIET="1" "$CONTRIB_OSX/extract_sigs.sh" "$DMG_RELEASE_UNPACKED"/Electrum.app
+QUIET="1" "$CONTRIB_OSX/extract_sigs.sh" "$DMG_RELEASE_UNPACKED"/Electrum-MONA.app
 echo "Applying extracted signatures to unsigned app..."
-QUIET="1" "$CONTRIB_OSX/apply_sigs.sh" "$DMG_UNSIGNED_UNPACKED"/Electrum.app mac_extracted_sigs.tar.gz
+QUIET="1" "$CONTRIB_OSX/apply_sigs.sh" "$DMG_UNSIGNED_UNPACKED"/Electrum-MONA.app mac_extracted_sigs.tar.gz
 
 rm mac_extracted_sigs.tar.gz
 rm -rf "$DMG_UNSIGNED_UNPACKED"

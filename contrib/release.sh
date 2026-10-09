@@ -102,7 +102,7 @@ fi
 set -x
 
 # create tarball
-tarball="Electrum-$VERSION.tar.gz"
+tarball="Electrum-MONA-$VERSION.tar.gz"
 if test -f "dist/$tarball"; then
     info "file exists: $tarball"
 else
@@ -110,7 +110,7 @@ else
 fi
 
 # create source-only tarball
-srctarball="Electrum-sourceonly-$VERSION.tar.gz"
+srctarball="Electrum-MONA-sourceonly-$VERSION.tar.gz"
 if test -f "dist/$srctarball"; then
     info "file exists: $srctarball"
 else
@@ -118,7 +118,7 @@ else
 fi
 
 # appimage
-appimage="electrum-$REV-x86_64.AppImage"
+appimage="electrum-mona-$REV-x86_64.AppImage"
 if test -f "dist/$appimage"; then
     info "file exists: $appimage"
 else
@@ -127,9 +127,9 @@ fi
 
 
 # windows
-win1="electrum-$REV.exe"
-win2="electrum-$REV-portable.exe"
-win3="electrum-$REV-setup.exe"
+win1="electrum-mona-$REV.exe"
+win2="electrum-mona-$REV-portable.exe"
+win3="electrum-mona-$REV-setup.exe"
 if test -f "dist/$win1"; then
     info "file exists: $win1"
 else
@@ -150,13 +150,13 @@ else
 fi
 
 # android
-apk1="Electrum-$VERSION-armeabi-v7a-release.apk"
-apk2="Electrum-$VERSION-arm64-v8a-release.apk"
-apk3="Electrum-$VERSION-x86_64-release.apk"
+apk1="Electrum_MONA-$VERSION-armeabi-v7a-release.apk"
+apk2="Electrum_MONA-$VERSION-arm64-v8a-release.apk"
+apk3="Electrum_MONA-$VERSION-x86_64-release.apk"
 for arch in armeabi-v7a arm64-v8a x86_64
 do
-    apk="Electrum-$VERSION-$arch-release.apk"
-    apk_unsigned="Electrum-$VERSION-$arch-release-unsigned.apk"
+    apk="Electrum_MONA-$VERSION-$arch-release.apk"
+    apk_unsigned="Electrum_MONA-$VERSION-$arch-release-unsigned.apk"
     if test -f "dist/$apk"; then
         info "file exists: $apk"
     else
@@ -177,7 +177,7 @@ done
 
 # the macos binary is built on a separate machine.
 # the file that needs to be copied over is the codesigned release binary (regardless of builder role)
-dmg="electrum-$VERSION.dmg"
+dmg="electrum-mona-$VERSION.dmg"
 if ! test -f "dist/$dmg"; then
     if [ ! -z "$RELEASEMANAGER" ] ; then  # RM
         fail "dmg is missing, aborting. Please build and codesign the dmg on a mac and copy it over."
@@ -227,6 +227,7 @@ if [ -z "$RELEASEMANAGER" ] ; then
 
     if [ -z "$SSHUSER" ]; then
         info "No SFTP access, downloading binaries from website"
+        # TODO monacoin: upstream download server. Electrum-MONA binaries are not published there.
         BASE_URL="https://download.electrum.org/$VERSION"
         FILES_TO_DOWNLOAD=(
             "$tarball"

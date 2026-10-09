@@ -5,8 +5,8 @@ set -e
 # Parameterize
 PYTHON_VERSION=3.12.10
 PY_VER_MAJOR="3.12"  # as it appears in fs paths
-PACKAGE=Electrum
-GIT_REPO=https://github.com/spesmilo/electrum
+PACKAGE=Electrum-MONA
+GIT_REPO=https://github.com/wakiyamap/electrum-mona
 
 export GCC_STRIP_BINARIES="1"
 export PYTHONDONTWRITEBYTECODE=1  # don't create __pycache__/ folders with .pyc files
@@ -179,7 +179,7 @@ export PROPCACHE_NO_EXTENSIONS=1
 export ELECTRUM_ECC_DONT_COMPILE=1
 
 info "Installing requirements..."
-python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: \
+CFLAGS="$CFLAGS $LYRA2RE2_HASH_CFLAGS" python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: \
     --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location \
     -Ir ./contrib/deterministic-build/requirements.txt \
     || fail "Could not install requirements"
@@ -221,7 +221,7 @@ info "Finished building unsigned dist/${PACKAGE}.app. This hash should be reprod
 find "dist/${PACKAGE}.app" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256
 
 info "Creating unsigned .DMG"
-hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-$VERSION-unsigned.dmg || fail "Could not create .DMG"
+hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-mona-$VERSION-unsigned.dmg || fail "Could not create .DMG"
 
 info "App was built successfully but was not code signed. Users may get security warnings from macOS."
 info "Now you also need to run sign_osx.sh to codesign/notarize the binary."

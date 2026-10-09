@@ -11,6 +11,9 @@ permissions:
 jobs:
   push-locale:
     name: "locale: upload to crowdin"
+    # Electrum-MONA uses the translations of upstream Electrum (see the "electrum-locale" git submodule).
+    # Only upstream pushes source strings to its crowdin project.
+    if: github.repository == 'spesmilo/electrum'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout (with submodules)

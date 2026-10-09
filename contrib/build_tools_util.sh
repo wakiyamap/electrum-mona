@@ -172,6 +172,14 @@ fi
 
 export GCC_STRIP_BINARIES="${GCC_STRIP_BINARIES:-0}"
 
+# The "lyra2re2_hash" python C extension (Lyra2REv2 proof-of-work of Monacoin) must be compiled with:
+# - "-fno-strict-aliasing": its sources (sph sha3) break strict-aliasing rules, and recent gcc
+#   miscompiles them at -O2. The module then returns wrong hashes (all headers fail the PoW check).
+# - "-DPY_SSIZE_T_CLEAN": it uses "y#" with Py_BuildValue, which raises SystemError on python 3.10-3.12
+#   unless this macro is defined.
+# Build scripts that let pip compile it should do so with CFLAGS="$LYRA2RE2_HASH_CFLAGS".
+export LYRA2RE2_HASH_CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN"
+
 export CPU_COUNT="$(nproc 2> /dev/null || sysctl -n hw.ncpu)"
 info "Found $CPU_COUNT CPUs, which we might use for building."
 

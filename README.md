@@ -1,30 +1,32 @@
-# Electrum - Lightweight Bitcoin client
+# Electrum-mona - Lightweight Monacoin client
 
 ```
 Licence: MIT Licence
 Author: Thomas Voegtlin
+Port Maintainer: WakiyamaP (Electrum-mona)
 Language: Python (>= 3.10)
-Homepage: https://electrum.org/
+Homepage: https://electrum-mona.org/
 ```
 
-[![Build Status](https://github.com/spesmilo/electrum/actions/workflows/builds.yml/badge.svg?branch=master)](https://github.com/spesmilo/electrum/actions/workflows/builds.yml)
-[![Test coverage statistics](https://coveralls.io/repos/github/spesmilo/electrum/badge.svg?branch=master)](https://coveralls.io/github/spesmilo/electrum?branch=master)
-[![Help translate Electrum online](https://d322cqt584bo4o.cloudfront.net/electrum/localized.svg)](https://crowdin.com/project/electrum)
+[![Test Status](https://github.com/wakiyamap/electrum-mona/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/wakiyamap/electrum-mona/actions/workflows/tests.yml)
+[![Build Status](https://github.com/wakiyamap/electrum-mona/actions/workflows/builds.yml/badge.svg?branch=master)](https://github.com/wakiyamap/electrum-mona/actions/workflows/builds.yml)
+[![Test coverage statistics](https://coveralls.io/repos/github/wakiyamap/electrum-mona/badge.svg?branch=master)](https://coveralls.io/github/wakiyamap/electrum-mona?branch=master)
 
 
 ## Getting started
 
-_(If you've come here looking to simply run Electrum,
-[you may download it here](https://electrum.org/#download).)_
+_(If you've come here looking to simply run Electrum-mona,
+[you may download it here](https://electrum-mona.org/).)_
 
 Electrum itself is pure Python, and so are most of the required dependencies,
 but not everything. The following sections describe how to run from source, but here
 is a TL;DR:
 
 ```
-$ sudo apt-get install libsecp256k1-dev
-$ ELECTRUM_ECC_DONT_COMPILE=1 python3 -m pip install --user ".[gui,crypto]"
+$ sudo apt-get install libsecp256k1-dev build-essential python3-dev
+$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" ELECTRUM_ECC_DONT_COMPILE=1 python3 -m pip install --user ".[gui,crypto]"
 ```
+(the `CFLAGS` are needed to compile `lyra2re2_hash` correctly, see below)
 
 ### Not pure-python dependencies
 
@@ -53,6 +55,24 @@ If you opt out of the compilation, you need to provide libsecp in another way, e
 $ sudo apt-get install libsecp256k1-dev
 ```
 
+#### lyra2re2_hash
+
+For the Lyra2REv2 proof-of-work of Monacoin,
+[lyra2re2_hash](https://pypi.org/project/lyra2re2-hash/)
+is a required dependency.
+
+This is a C extension that gets compiled locally when you "pip install" it,
+so you need a C compiler and the Python headers.
+Its sources must be compiled with `-fno-strict-aliasing` (recent compilers miscompile
+them otherwise, and it then returns wrong hashes), and with `-DPY_SSIZE_T_CLEAN`
+(needed for Python older than 3.13):
+```
+$ sudo apt-get install build-essential python3-dev
+$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" python3 -m pip install --user --no-binary lyra2re2_hash lyra2re2_hash
+```
+If it is already installed but was built without these flags,
+add `--force-reinstall --no-cache-dir` to rebuild it.
+
 #### cryptography
 
 Due to the need for fast symmetric ciphers,
@@ -71,22 +91,23 @@ If you would like hardware wallet support,
 ### Running from tar.gz
 
 If you downloaded the official package (tar.gz), you can run
-Electrum from its root directory without installing it on your
+Electrum-mona from its root directory without installing it on your
 system; all the pure python dependencies are included in the 'packages'
-directory. To run Electrum from its root directory, just do:
+directory (`lyra2re2_hash` is not pure python: install it as described above).
+To run Electrum from its root directory, just do:
 ```
 $ ./run_electrum
 ```
 
-You can also install Electrum on your system, by running this command:
+You can also install Electrum-mona on your system, by running this command:
 ```
 $ sudo apt-get install python3-setuptools python3-pip
-$ python3 -m pip install --user .
+$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" python3 -m pip install --user .
 ```
 
 This will download and install the Python dependencies used by
-Electrum instead of using the 'packages' directory.
-It will also place an executable named `electrum` in `~/.local/bin`,
+Electrum-mona instead of using the 'packages' directory.
+It will also place an executable named `electrum-mona` in `~/.local/bin`,
 so make sure that is on your `PATH` variable.
 
 
@@ -97,14 +118,14 @@ and [for macOS](contrib/osx/README_macos.md))_
 
 Check out the code from GitHub:
 ```
-$ git clone https://github.com/spesmilo/electrum.git
-$ cd electrum
+$ git clone https://github.com/wakiyamap/electrum-mona.git
+$ cd electrum-mona
 $ git submodule update --init
 ```
 
-Run install (this should install dependencies):
+Run install (this should install dependencies, including `lyra2re2_hash`, hence the `CFLAGS`):
 ```
-$ python3 -m pip install --user -e .
+$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" python3 -m pip install --user -e .
 ```
 
 Create translations (optional):

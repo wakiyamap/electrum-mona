@@ -1,13 +1,13 @@
 [app]
 
 # (str) Title of your application
-title = Electrum
+title = Electrum-MONA
 
 # (str) Package name
-package.name = Electrum
+package.name = Electrum_MONA
 
 # (str) Package domain (needed for android/ios packaging)
-package.domain = org.electrum
+package.domain = org.electrum_mona
 
 # (str) Source code where the main.py live
 source.dir = .
@@ -79,7 +79,8 @@ requirements =
     pycryptodomex,
     pyqt6sip,
     pyqt6,
-    libzbar
+    libzbar,
+    lyra2re2_hash
 
 # (str) Presplash of the application
 presplash.filename = %(source.dir)s/electrum_mona/gui/icons/electrum_presplash.png
@@ -153,7 +154,7 @@ android.accept_sdk_license = True
 #android.add_jars = foo.jar,bar.jar,path/to/more/*.jar
 #android.add_jars = lib/android/zbar.jar
 
-android.add_jars = .buildozer/android/platform/*/build/libs_collections/Electrum/jar/*.jar
+android.add_jars = .buildozer/android/platform/*/build/libs_collections/Electrum_MONA/jar/*.jar
 
 
 android.add_aars =

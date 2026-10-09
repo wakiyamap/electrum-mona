@@ -93,6 +93,8 @@ fi
 
 "$here/prepare-wine.sh" || fail "prepare-wine failed"
 
+"$here/build-lyra2rev2.sh" || fail "build-lyra2rev2 failed"
+
 info "Resetting modification time in C:\Python..."
 # (Because of some bugs in pyinstaller)
 pushd /opt/wine64/drive_c/python*

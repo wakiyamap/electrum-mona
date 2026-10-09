@@ -45,7 +45,7 @@ fi
 info "building docker image."
 docker build \
     $DOCKER_BUILD_FLAGS \
-    -t electrum-android-builder-img \
+    -t electrum-mona-android-builder-img \
     --file "$CONTRIB_ANDROID/Dockerfile" \
     "$PROJECT_ROOT"
 
@@ -53,7 +53,7 @@ docker build \
 if [ ! -z "$ELECBUILD_COMMIT" ] ; then
     info "ELECBUILD_COMMIT=$ELECBUILD_COMMIT. doing fresh clone and git checkout."
     FRESH_CLONE_BASE=${FRESH_CLONE_BASE:-"/var/tmp/electrum_build/android"}
-    FRESH_CLONE="$FRESH_CLONE_BASE/electrum"
+    FRESH_CLONE="$FRESH_CLONE_BASE/electrum-mona"
     rm -rf "$FRESH_CLONE" 2>/dev/null || (
         info "we need sudo to rm prev FRESH_CLONE." &&
         sudo chown "$(id -u)" "$FRESH_CLONE_BASE" &&
@@ -96,12 +96,12 @@ if [ ! -z "$ELECBUILD_COMMIT" ] ; then  # fresh clone (reproducible build)
     fi
 fi
 docker run --rm \
-    --name electrum-android-builder-cont \
+    --name electrum-mona-android-builder-cont \
     -v "$PROJECT_ROOT_OR_FRESHCLONE_ROOT":/home/user/wspace/electrum \
     -v "$PROJECT_ROOT_OR_FRESHCLONE_ROOT"/.buildozer/.gradle:/home/user/.gradle \
     $DOCKER_RUN_FLAGS \
     --workdir /home/user/wspace/electrum \
-    electrum-android-builder-img \
+    electrum-mona-android-builder-img \
     ./contrib/android/make_apk.sh "$@"
 
 # make sure resulting binary location is independent of fresh_clone
