@@ -3,13 +3,13 @@ abi <abi/3.0>,
 
 include <tunables/global>
 
-@{electrum_exec_path} = /{usr/,usr/local/,*/*/.local/,}bin/electrum
+@{electrum_exec_path} = /{usr/,usr/local/,*/*/.local/,}bin/electrum-mona
 
-profile electrum @{electrum_exec_path} {
+profile electrum-mona @{electrum_exec_path} {
   include <abstractions/electrum>
 
   @{electrum_exec_path} mr,
-  owner @{HOME}/.electrum/{**,} rw,
+  owner @{HOME}/.electrum-mona/{**,} rw,
   owner @{HOME}/.local/{**,} mrw,
 
 }

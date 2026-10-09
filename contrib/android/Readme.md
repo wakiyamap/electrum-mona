@@ -71,8 +71,8 @@ in such a case, worth a try clearing it.
 ### How do I deploy on connected phone for quick testing?
 Assuming `adb` is installed:
 ```
-$ adb -d install -r dist/Electrum-*-arm64-v8a-debug.apk
-$ adb shell monkey -p org.electrum.electrum 1
+$ adb -d install -r dist/Electrum_MONA-*-arm64-v8a-debug.apk
+$ adb shell monkey -p org.electrum_mona.electrum_mona 1
 ```
 Note `adb install` can take a `--user {userId}` option to install the app for a specific profile.
 Without that, the default is to install to *all* profiles.
@@ -84,7 +84,7 @@ $ docker run -it --rm \
     -v $PWD:/home/user/wspace/electrum \
     -v $PWD/.buildozer/.gradle:/home/user/.gradle \
     --workdir /home/user/wspace/electrum \
-    electrum-android-builder-img
+    electrum-mona-android-builder-img
 ```
 
 
@@ -99,7 +99,7 @@ adb logcat | grep python
 ```
 Better `grep` but fragile because of `cut`:
 ```
-adb logcat | grep -F "`adb shell ps | grep org.electrum.electrum | cut -c14-19`"
+adb logcat | grep -F "`adb shell ps | grep org.electrum_mona.electrum_mona | cut -c14-19`"
 ```
 
 
@@ -142,18 +142,18 @@ of Android does not let you access the internal storage of an app without root.
 To pull a file:
 ```
 $ adb shell
-adb$ run-as org.electrum.electrum ls /data/data/org.electrum.electrum/files/data
+adb$ run-as org.electrum_mona.electrum_mona ls /data/data/org.electrum_mona.electrum_mona/files/data
 adb$ exit
-$ adb exec-out run-as org.electrum.electrum cat /data/data/org.electrum.electrum/files/data/wallets/my_wallet > my_wallet
+$ adb exec-out run-as org.electrum_mona.electrum_mona cat /data/data/org.electrum_mona.electrum_mona/files/data/wallets/my_wallet > my_wallet
 ```
 To push a file:
 ```
 $ adb push ~/wspace/tmp/my_wallet /data/local/tmp
 $ adb shell
 adb$ ls -la /data/local/tmp
-adb$ run-as org.electrum.testnet.electrum cp /data/local/tmp/my_wallet /data/data/org.electrum.testnet.electrum/files/data/testnet/wallets/
-adb$ run-as org.electrum.testnet.electrum chmod -R 700 /data/data/org.electrum.testnet.electrum/files/data/testnet/wallets
-adb$ run-as org.electrum.testnet.electrum chmod -R u-x,u+X /data/data/org.electrum.testnet.electrum/files/data/testnet/wallets
+adb$ run-as org.electrum_mona.testnet.electrum_mona cp /data/local/tmp/my_wallet /data/data/org.electrum_mona.testnet.electrum_mona/files/data/testnet/wallets/
+adb$ run-as org.electrum_mona.testnet.electrum_mona chmod -R 700 /data/data/org.electrum_mona.testnet.electrum_mona/files/data/testnet/wallets
+adb$ run-as org.electrum_mona.testnet.electrum_mona chmod -R u-x,u+X /data/data/org.electrum_mona.testnet.electrum_mona/files/data/testnet/wallets
 adb$ rm /data/local/tmp/my_wallet
 ```
 
@@ -169,8 +169,8 @@ Run `$ adb shell pm list users` to get a list of all existing users, and take no
 
 Instead of `/data/data/{app.path}`, private app data is stored at `/data/user/{userId}/{app.path}`.
 
-Further, instead of `adb$ run-as org.electrum.electrum`,
-you need `adb$ run-as org.electrum.electrum --user {userId}`.
+Further, instead of `adb$ run-as org.electrum_mona.electrum_mona`,
+you need `adb$ run-as org.electrum_mona.electrum_mona --user {userId}`.
 
 ### How to investigate diff between binaries if reproducibility fails?
 ```
@@ -204,8 +204,8 @@ cat d
 ### How to install apks built by the CI on my phone?
 
 The CI (GitHub Actions) builds apks on a nightly schedule.
-See the [`builds` workflow](https://github.com/spesmilo/electrum/actions/workflows/builds.yml).
-Open the run of interest and download the `electrum-android-*` artifact.
+See the [`builds` workflow](https://github.com/wakiyamap/electrum-mona/actions/workflows/builds.yml).
+Open the run of interest and download the `electrum-mona-android-*` artifact.
 The apk is built in `debug` mode, and is signed using an ephemeral RSA key.
 
 For tech demo purposes, you can directly install this apk on your phone.
@@ -217,5 +217,5 @@ However, it is possible to resign the apk manually with one's own key, using
 e.g. [`apksigner`](https://developer.android.com/studio/command-line/apksigner),
 mutating the apk in place, after which it should be possible to upgrade:
 ```
-apksigner sign --ks ~/wspace/electrum/contrib/android/android_debug.keystore Electrum-*-arm64-v8a-debug.apk
+apksigner sign --ks ~/wspace/electrum/contrib/android/android_debug.keystore Electrum_MONA-*-arm64-v8a-debug.apk
 ```

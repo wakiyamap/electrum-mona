@@ -4,8 +4,9 @@
 *.swp
 build/
 dist/
+tmp/
 *.egg/
-Electrum.egg-info/
+Electrum_MONA.egg-info/
 .devlocaltmp/
 *_trial_temp
 packages
@@ -17,7 +18,7 @@ bin/
 .idea
 .mypy_cache
 .vscode
-electrum_data
+electrum-mona_data
 .DS_Store
 contrib/trigger_website
 contrib/trigger_binaries
@@ -27,6 +28,9 @@ contrib/trigger_binaries
 .cache/
 .coverage
 .pytest_cache
+.pyre/
+.pyre_configuration
+.watchmanconfig
 
 # build workspaces
 contrib/build-wine/tmp/

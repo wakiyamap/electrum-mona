@@ -47,7 +47,7 @@ is_appimage = 'APPIMAGE' in os.environ
 is_binary_distributable = is_pyinstaller or is_android or is_appimage
 # is_local: unpacked tar.gz but not pip installed, or git clone
 is_local = (not is_binary_distributable
-            and os.path.exists(os.path.join(script_dir, "electrum.desktop")))
+            and os.path.exists(os.path.join(script_dir, "electrum-mona.desktop")))
 is_git_clone = is_local and os.path.exists(os.path.join(script_dir, ".git"))
 
 if is_git_clone:
@@ -166,7 +166,7 @@ def init_cmdline(config_options, wallet_path, *, rpcserver: bool, config: 'Simpl
 
     if cmd.requires_wallet and not storage.file_exists():
         print_msg("Error: Wallet file not found.")
-        print_msg("Type 'electrum create' to create a new wallet, or provide a path to a wallet with the -w option")
+        print_msg("Type 'electrum-mona create' to create a new wallet, or provide a path to a wallet with the -w option")
         sys_exit(1)
 
     # important warning
@@ -342,7 +342,7 @@ def parse_command_line(simple_parser=False) -> Dict:
     if config_options.get('portable'):
         if is_local:
             # running from git clone or local source: put datadir next to main script
-            datadir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'electrum_data')
+            datadir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'electrum-mona_data')
         else:
             # Running a binary or installed source. The most generic but still reasonable thing
             # is to use the current working directory. (see #7732)
@@ -350,7 +350,7 @@ def parse_command_line(simple_parser=False) -> Dict:
             #       and we don't want to put the datadir inside a temp dir.
             # note: Re the portable .exe on Windows, when the user double-clicks it, CWD gets set
             #       to the parent dir, i.e. we will put the datadir next to the exe.
-            datadir = os.path.join(os.path.realpath(cwd), 'electrum_data')
+            datadir = os.path.join(os.path.realpath(cwd), 'electrum-mona_data')
         config_options['electrum_path'] = datadir
 
     if not config_options.get('verbosity'):
@@ -463,7 +463,7 @@ def main():
         lockfile = daemon.get_lockfile(config)
         if os.path.exists(lockfile):
             print_stderr("Daemon already running (lockfile detected).")
-            print_stderr("Run 'electrum stop' to stop the daemon.")
+            print_stderr("Run 'electrum-mona stop' to stop the daemon.")
             sys.exit(1)
         # Initialise rpc credentials to random if not set yet. This would normally be done
         # later anyway, but we need to avoid the two sides of the fork setting conflicting random creds.
@@ -563,7 +563,7 @@ def handle_cmd(*, cmdname: str, config: 'SimpleConfig', config_options: dict):
             try:
                 result = daemon.request(config, 'run_cmdline', (config_options,), timeout)
             except daemon.DaemonNotRunning:
-                print_msg("Daemon not running; try 'electrum daemon -d'")
+                print_msg("Daemon not running; try 'electrum-mona daemon -d'")
                 if not cmd.requires_network:
                     print_msg("To run this command without a daemon, use --offline")
                 if cmd.name == "stop":  # remove lockfile if it exists, as daemon looks dead
@@ -591,7 +591,7 @@ def handle_cmd(*, cmdname: str, config: 'SimpleConfig', config_options: dict):
             lockfile = daemon.get_lockfile(config)
             if os.path.exists(lockfile):
                 print_stderr("Daemon already running (lockfile detected)")
-                print_stderr("Run 'electrum stop' to stop the daemon.")
+                print_stderr("Run 'electrum-mona stop' to stop the daemon.")
                 print_stderr("Run this command without --offline to interact with the daemon")
                 sys_exit(1)
             init_cmdline(config_options, wallet_path, rpcserver=False, config=config)

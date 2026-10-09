@@ -61,7 +61,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: electrum-windows-${{ github.sha }}
+          name: electrum-mona-windows-${{ github.sha }}
           path: contrib/build-wine/dist/*
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
@@ -120,7 +120,7 @@ jobs:
       - name: Upload Android APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: electrum-android-${{ env.APK_ARCH }}-${{ github.sha }}
+          name: electrum-mona-android-${{ env.APK_ARCH }}-${{ github.sha }}
           path: dist/*
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
@@ -158,7 +158,7 @@ jobs:
       - name: Upload AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: electrum-appimage-${{ github.sha }}
+          name: electrum-mona-appimage-${{ github.sha }}
           path: dist/*.AppImage
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
@@ -175,10 +175,10 @@ jobs:
         include:
           - variant: full
             omit_unclean: '0'
-            artifact_name: electrum-tarball
+            artifact_name: electrum-mona-tarball
           - variant: source-only
             omit_unclean: '1'
-            artifact_name: electrum-sourceonly-tarball
+            artifact_name: electrum-mona-sourceonly-tarball
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

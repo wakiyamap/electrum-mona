@@ -1,8 +1,9 @@
 blank_issues_enabled: false
-contact_links:
+contact_links: []
 #  - name: Electrum Security Policy
 #    url: https://github.com/spesmilo/electrum/blob/master/SECURITY.md
 #    about: View security policy
-  - name: Community Forum
-    url: https://bitcointalk.org/index.php?board=98.0
-    about: Ask non-development-related questions here
+# TODO monacoin: this is the forum of upstream Electrum (Bitcoin). Link an Electrum-MONA community place instead?
+#  - name: Community Forum
+#    url: https://bitcointalk.org/index.php?board=98.0
+#    about: Ask non-development-related questions here

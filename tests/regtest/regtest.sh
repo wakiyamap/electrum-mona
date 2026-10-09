@@ -10,7 +10,7 @@ alice="./run_electrum --regtest -D /tmp/alice"
 bob="./run_electrum --regtest -D /tmp/bob"
 carol="./run_electrum --regtest -D /tmp/carol"
 
-bitcoin_cli="bitcoin-cli -rpcuser=doggman -rpcpassword=donkey -rpcport=18554 -regtest"
+bitcoin_cli="monacoin-cli -rpcuser=doggman -rpcpassword=donkey -rpcport=19443 -regtest"
 
 function new_blocks()
 {

@@ -9,26 +9,31 @@
 
 ### 1. Check out the code from GitHub:
 ```
-> git clone https://github.com/spesmilo/electrum.git
-> cd electrum
+> git clone https://github.com/wakiyamap/electrum-mona.git
+> cd electrum-mona
 > git submodule update --init
 ```
 
 Run install (this should install most dependencies):
 ```
+> set CL=/DPY_SSIZE_T_CLEAN
 > python3 -m pip install --user -e ".[gui,crypto]"
 ```
+(note: `lyra2re2_hash` is a C extension that pip compiles locally, so a C compiler is needed,
+e.g. the "Microsoft C++ Build Tools". The `CL` env var adds a define that its sources
+need on Python older than 3.13. If compiling with gcc (MinGW) instead,
+`-fno-strict-aliasing` is needed as well, see the main README.)
 
 ### 2. Install `libsecp256k1`
 
 [comment]: # (technically the dll should be put into site-packages/electrum_ecc/,
-but putting it into electrum/ also works because of the `os.add_dll_directory` call in
+but putting it into electrum_mona/ also works because of the `os.add_dll_directory` call in
 electrum_mona/__init__.py)
 
 [libsecp256k1](https://github.com/bitcoin-core/secp256k1) is a required dependency.
 This is a C library, which you need to compile yourself.
 Electrum needs a dll, named `libsecp256k1-0.dll` (or newer `libsecp256k1-*.dll`),
-placed into the inner `electrum/` folder.
+placed into the inner `electrum_mona/` folder.
 
 For Unix-like systems, the (`contrib/make_libsecp256k1.sh`) script does this for you,
 however it does not work on Windows.

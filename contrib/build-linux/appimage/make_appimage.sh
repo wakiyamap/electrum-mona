@@ -25,7 +25,7 @@ PY_VER_MAJOR="3.12"  # as it appears in fs paths
 PKG2APPIMAGE_COMMIT="a9c85b7e61a3a883f4a35c41c5decb5af88b6b5d"
 
 VERSION=$(git describe --tags --dirty --always)
-APPIMAGE="$DISTDIR/electrum-$VERSION-x86_64.AppImage"
+APPIMAGE="$DISTDIR/electrum-mona-$VERSION-x86_64.AppImage"
 
 rm -rf "$BUILDDIR"
 mkdir -p "$APPDIR" "$CACHEDIR" "$PIP_CACHE_DIR" "$DISTDIR" "$DLL_TARGET_DIR"
@@ -145,7 +145,7 @@ export PROPCACHE_NO_EXTENSIONS=1
 export ELECTRUM_ECC_DONT_COMPILE=1
 
 info "installing electrum and its dependencies."
-"$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
+CFLAGS="$LYRA2RE2_HASH_CFLAGS" "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements.txt"
 "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --only-binary PyQt6,PyQt6-Qt6,cryptography --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-binaries.txt"
@@ -160,7 +160,7 @@ info "installing electrum and its dependencies."
 
 
 info "desktop integration."
-cp "$PROJECT_ROOT/electrum.desktop" "$APPDIR/electrum.desktop"
+cp "$PROJECT_ROOT/electrum-mona.desktop" "$APPDIR/electrum-mona.desktop"
 cp "$PROJECT_ROOT/electrum_mona/gui/icons/electrum.png" "$APPDIR/electrum.png"
 
 

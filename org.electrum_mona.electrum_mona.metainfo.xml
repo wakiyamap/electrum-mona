@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  Copyright 2023-2024 Soren Stoutner <soren@debian.org>.
+
+  This file can be validated using `appstreamcli validate org.electrum_mona.electrum_mona.metainfo.xml`.
+
+  Distributed under the MIT software license, see the accompanying file LICENCE or http://www.opensource.org/licenses/mit-license.php.
+-->
+
+<component type="desktop-application">
+  <id>org.electrum_mona.electrum_mona</id>
+
+  <name>Electrum-MONA</name>
+  <summary>Monacoin Wallet</summary>
+
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      Electrum-MONA is a lightweight Monacoin wallet focused on speed, with low resource usage and simplifying Monacoin.
+      Startup times are instant because it operates in conjunction with high-performance servers that handle the most complicated parts of the Monacoin system.
+    </p>
+  </description>
+
+  <url type="homepage">https://electrum-mona.org/</url>
+  <developer id="org.electrum_mona">
+      <name>The Electrum-MONA developers</name>
+  </developer>
+
+  <launchable type="desktop-id">electrum-mona.desktop</launchable>
+
+  <content_rating type="oars-1.1" />
+</component>
