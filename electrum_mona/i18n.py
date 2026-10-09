@@ -95,8 +95,36 @@ def _ensure_translation_keeps_format_string_syntax_similar(translator):
 #       However, only if the translators understand and use it correctly!
 #          _("time left: {0} minutes, {1} seconds").format(t//60, t%60)                   # <- works. ok to use
 #          _("time left: {mins} minutes, {secs} seconds").format(mins=t//60, secs=t%60)   # <- works, but too complex
+# The source strings and the translations are shared with upstream Electrum and say "Bitcoin".
+# Instead of patching every string, they are rewritten here, when they are looked up.
+# (upstream name, our name)
+_COIN_NAME_REPLACEMENTS = [
+    ('Bitcoin', 'Monacoin'),
+    ('bitcoin', 'monacoin'),
+    ('mBTC/kB', 'mMONA/kB'),
+    ('\u6bd4\u7279\u5e01', '\u840c\u5948\u5e01'),  # zh
+    ('\u30d3\u30c3\u30c8\u30b3\u30a4\u30f3', '\u30e2\u30ca\u30b3\u30a4\u30f3'),  # ja
+]
+
+
+def _to_upstream_coin_name(msg: str) -> str:
+    for upstream_name, our_name in _COIN_NAME_REPLACEMENTS:
+        msg = msg.replace(our_name, upstream_name)
+    return msg
+
+
+def _to_our_coin_name(msg: str) -> str:
+    for upstream_name, our_name in _COIN_NAME_REPLACEMENTS:
+        msg = msg.replace(upstream_name, our_name)
+    return msg
+
+
 @_ensure_translation_keeps_format_string_syntax_similar
 def _(msg: str, *, context=None) -> str:
+    return _to_our_coin_name(_translate(_to_upstream_coin_name(msg), context=context))
+
+
+def _translate(msg: str, *, context=None) -> str:
     if msg == "":
         return ""  # empty string must not be translated. see #7158
     if context:
