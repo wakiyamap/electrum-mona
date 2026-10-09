@@ -217,8 +217,8 @@ class Test_bitcoin(ElectrumTestCase):
         sig1_b64 = base64.b64encode(sig1)
         sig2_b64 = base64.b64encode(sig2)
 
-        self.assertEqual(sig1_b64, b'Hzsu0U/THAsPz/MSuXGBKSULz2dTfmrg1NsAhFp+wH5aKfmX4Db7ExLGa7FGn0m6Mf43KsbEOWpvUUUBTM3Uusw=')
-        self.assertEqual(sig2_b64, b'HBQdYfv7kOrxmRewLJnG7sV6KlU71O04hUnE4tai97p7Pg+D+yKaWXsdGgHTrKw90caQMo/D6b//qX50ge9P9iI=')
+        self.assertEqual(sig1_b64, b'IDCS1piV1bGdQjPVT/48dRj2tXBfJBNca+V2NASZD1KLTqUq1QqV2JTz8su5zx9PjbziLq8GRSQ6jaFepAhdyow=')
+        self.assertEqual(sig2_b64, b'Gz1XlFpbGfjFMC3UlrXoZanbKtquMasvelpNay7JU908I8uX8PQ6Tvu5q0ho0zk7V4OZxWMrGOCfDN/TgYtsBCo=')
 
         self.assertTrue(bitcoin.verify_usermessage_with_address(addr1, sig1, msg1))
         self.assertTrue(bitcoin.verify_usermessage_with_address(addr2, sig2, msg2))
@@ -229,8 +229,8 @@ class Test_bitcoin(ElectrumTestCase):
     def test_signmessage_low_s(self):
         """`$ bitcoin-cli verifymessage` does NOT enforce the low-S rule for ecdsa sigs. This tests we do the same."""
         addr = "15hETetDmcXm1mM4sEf7U2KXC9hDHFMSzz"
-        sig_low_s = b'Hzsu0U/THAsPz/MSuXGBKSULz2dTfmrg1NsAhFp+wH5aKfmX4Db7ExLGa7FGn0m6Mf43KsbEOWpvUUUBTM3Uusw='
-        sig_high_s = b'IDsu0U/THAsPz/MSuXGBKSULz2dTfmrg1NsAhFp+wH5a1gZoH8kE7O05lE65YLZFzLx3sh/rDzXMbo1dQAJhhnU='
+        sig_low_s = b'IDCS1piV1bGdQjPVT/48dRj2tXBfJBNca+V2NASZD1KLTqUq1QqV2JTz8su5zx9PjbziLq8GRSQ6jaFepAhdyow='
+        sig_high_s = b'HzCS1piV1bGdQjPVT/48dRj2tXBfJBNca+V2NASZD1KLsVrVKvVqJ2sMDTRGMOCwcP3MrjepA3wBMjD/6MfYdrU='
         msg = b'Chancellor on brink of second bailout for banks'
         self.assertTrue(bitcoin.verify_usermessage_with_address(address=addr, sig65=base64.b64decode(sig_low_s), message=msg))
         self.assertTrue(bitcoin.verify_usermessage_with_address(address=addr, sig65=base64.b64decode(sig_high_s), message=msg))
@@ -240,13 +240,13 @@ class Test_bitcoin(ElectrumTestCase):
         # p2wpkh-p2sh
         sig1 = self.sign_message_with_wif_privkey("p2wpkh-p2sh:L1cgMEnShp73r9iCukoPE3MogLeueNYRD9JVsfT1zVHyPBR3KqBY", msg)
         addr1 = "3DYoBqQ5N6dADzyQjy9FT1Ls4amiYVaqTG"
-        self.assertEqual(base64.b64encode(sig1), b'HyFaND+87TtVbRhkTfT3mPNBCQcJ32XXtNZGW8sFldJsNpOPCegEmdcCf5Thy18hdMH88GLxZLkOby/EwVUuSeA=')
+        self.assertEqual(base64.b64encode(sig1), b'H2GKOLRvTZI8ONJielHLyKo7ty7y4iHkspwODkL83qYsecW0uGSStiieUDhx0eWGnZJ1mrVBQfKzlBsrVScDP4w=')
         self.assertTrue(bitcoin.verify_usermessage_with_address(addr1, sig1, msg))
         self.assertFalse(bitcoin.verify_usermessage_with_address(addr1, sig1, b'heyheyhey'))
         # p2wpkh
         sig2 = self.sign_message_with_wif_privkey("p2wpkh:L1cgMEnShp73r9iCukoPE3MogLeueNYRD9JVsfT1zVHyPBR3KqBY", msg)
         addr2 = "bc1qq2tmmcngng78nllq2pvrkchcdukemtj56uyue0"
-        self.assertEqual(base64.b64encode(sig2), b'HyFaND+87TtVbRhkTfT3mPNBCQcJ32XXtNZGW8sFldJsNpOPCegEmdcCf5Thy18hdMH88GLxZLkOby/EwVUuSeA=')
+        self.assertEqual(base64.b64encode(sig2), b'H2GKOLRvTZI8ONJielHLyKo7ty7y4iHkspwODkL83qYsecW0uGSStiieUDhx0eWGnZJ1mrVBQfKzlBsrVScDP4w=')
         self.assertTrue(bitcoin.verify_usermessage_with_address(addr2, sig2, msg))
         self.assertFalse(bitcoin.verify_usermessage_with_address(addr2, sig2, b'heyheyhey'))
 
@@ -255,17 +255,19 @@ class Test_bitcoin(ElectrumTestCase):
         with p2wpkh and p2wpkh-p2sh addresses. Test that we also accept signatures from them.
         see #3861
         tests from https://github.com/trezor/trezor-firmware/blob/2ce1e6ba7dbe5bbaeeb336fff0a038e59cb40ef8/tests/device_tests/bitcoin/test_signmessage.py#L39
+        Electrum-MONA: same keys and message as the Trezor tests (mnemonic "all all ... all", m/49h/0h/0h/0/0 and
+        m/84h/0h/0h/0/0), but signed with the Monacoin message magic, the way Trezor signs (plain RFC6979).
         """
         msg = b"This is an example of a signed message."
         addr1 = "3L6TyTisPBmrDAj6RoKmDzNnj4eQi54gD2"
         addr2 = "bc1qannfxke2tfd4l7vhepehpvt05y83v3qsf6nfkk"
-        sig1 = bytes.fromhex("23744de4516fac5c140808015664516a32fead94de89775cec7e24dbc24fe133075ac09301c4cc8e197bea4b6481661d5b8e9bf19d8b7b8a382ecdb53c2ee0750d")
-        sig2 = bytes.fromhex("28b55d7600d9e9a7e2a49155ddf3cfdb8e796c207faab833010fa41fb7828889bc47cf62348a7aaa0923c0832a589fab541e8f12eb54fb711c90e2307f0f66b194")
+        sig1 = bytes.fromhex("23058d3c58f2c42314a8f020353c7dcee1caa0bd42cacb6a6f393e5f0cd62ee21f731ebcc9025d2d7b43e82accc7ca0c40a8a76b5387e2f7ec5cf9372c17f94d34")
+        sig2 = bytes.fromhex("27149b92bcc59f70a4562ca3c1ad4ee723122246e9f710670c29c2b8e54ee44bde73800282b073e2150e16c58cc8cb089506cd6454e1b610de4e12a2a0c1bfa2d7")
         self.assertTrue(bitcoin.verify_usermessage_with_address(address=addr1, sig65=sig1, message=msg))
         self.assertTrue(bitcoin.verify_usermessage_with_address(address=addr2, sig65=sig2, message=msg))
         # if there is type information in the header of the sig (first byte), enforce that:
-        sig1_wrongtype = bytes.fromhex("27744de4516fac5c140808015664516a32fead94de89775cec7e24dbc24fe133075ac09301c4cc8e197bea4b6481661d5b8e9bf19d8b7b8a382ecdb53c2ee0750d")
-        sig2_wrongtype = bytes.fromhex("24b55d7600d9e9a7e2a49155ddf3cfdb8e796c207faab833010fa41fb7828889bc47cf62348a7aaa0923c0832a589fab541e8f12eb54fb711c90e2307f0f66b194")
+        sig1_wrongtype = bytes.fromhex("27058d3c58f2c42314a8f020353c7dcee1caa0bd42cacb6a6f393e5f0cd62ee21f731ebcc9025d2d7b43e82accc7ca0c40a8a76b5387e2f7ec5cf9372c17f94d34")
+        sig2_wrongtype = bytes.fromhex("23149b92bcc59f70a4562ca3c1ad4ee723122246e9f710670c29c2b8e54ee44bde73800282b073e2150e16c58cc8cb089506cd6454e1b610de4e12a2a0c1bfa2d7")
         self.assertFalse(bitcoin.verify_usermessage_with_address(address=addr1, sig65=sig1_wrongtype, message=msg))
         self.assertFalse(bitcoin.verify_usermessage_with_address(address=addr2, sig65=sig2_wrongtype, message=msg))
 

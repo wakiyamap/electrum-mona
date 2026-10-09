@@ -28,6 +28,7 @@ from electrum_mona import json_db
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest
 from .test_wallet_vertical import WalletIntegrityHelper
+from .upstream_params import upstream_relay_feerate
 
 
 class TestCommands(ElectrumTestCase):
@@ -136,14 +137,14 @@ class TestCommands(ElectrumTestCase):
             config=self.config)['wallet']
         cmds = Commands(config=self.config)
         # single address tests
-        with self.assertRaisesRegex(UserFacingException, "Invalid bitcoin address: asdasd"):
+        with self.assertRaisesRegex(UserFacingException, "Invalid monacoin address: asdasd"):
             await cmds.getprivatekeys("asdasd", wallet=wallet)  # error must name the whole string, see #3676
         with self.assertRaisesRegex(UserFacingException, "Address not in wallet: bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23"):
             await cmds.getprivatekeys("bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23", wallet=wallet)  # not in wallet
         self.assertEqual("p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL",
                          await cmds.getprivatekeys("bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw", wallet=wallet))
         # list of addresses tests
-        with self.assertRaisesRegex(UserFacingException, "Invalid bitcoin address: asd$"):
+        with self.assertRaisesRegex(UserFacingException, "Invalid monacoin address: asd$"):
             await cmds.getprivatekeys(['bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', 'asd'], wallet=wallet)
         self.assertEqual(['p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL', 'p2wpkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN'],
                          await cmds.getprivatekeys(['bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', 'bc1q9pzjpjq4nqx5ycnywekcmycqz0wjp2nq604y2n'], wallet=wallet))
@@ -155,14 +156,14 @@ class TestCommands(ElectrumTestCase):
             config=self.config)['wallet']
         cmds = Commands(config=self.config)
         # single address tests
-        with self.assertRaisesRegex(UserFacingException, "Invalid bitcoin address: asdasd"):
+        with self.assertRaisesRegex(UserFacingException, "Invalid monacoin address: asdasd"):
             await cmds.getprivatekeys("asdasd", wallet=wallet)  # error must name the whole string, see #3676
         with self.assertRaisesRegex(UserFacingException, "Address not in wallet: bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23"):
             await cmds.getprivatekeys("bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23", wallet=wallet)  # not in wallet
         self.assertEqual("p2wpkh:L15oxP24NMNAXxq5r2aom24pHPtt3Fet8ZutgL155Bad93GSubM2",
                          await cmds.getprivatekeys("bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af", wallet=wallet))
         # list of addresses tests
-        with self.assertRaisesRegex(UserFacingException, "Invalid bitcoin address: asd$"):
+        with self.assertRaisesRegex(UserFacingException, "Invalid monacoin address: asd$"):
             await cmds.getprivatekeys(['bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af', 'asd'], wallet=wallet)
         self.assertEqual(['p2wpkh:L15oxP24NMNAXxq5r2aom24pHPtt3Fet8ZutgL155Bad93GSubM2', 'p2wpkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN'],
                          await cmds.getprivatekeys(['bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af', 'bc1q9pzjpjq4nqx5ycnywekcmycqz0wjp2nq604y2n'], wallet=wallet))
@@ -171,7 +172,7 @@ class TestCommands(ElectrumTestCase):
         cmds = Commands(config=self.config)
         msg = "hello there"
         addr = "bc1qq2tmmcngng78nllq2pvrkchcdukemtj56uyue0"
-        sig = "HznHvCsY//Zr5JvPIR3rN/RbCkttvrUs8Yt+vw+e1c29BLMSlcrN4+Y4Pq8e/UJuh2bDrUboTfsFhBJap+fPmNY="
+        sig = "H3MAD1Hg2wQPWm2s9mFAvuG60XrBflVTN2uQE7GseVq4IqvTpnQJaTRW0PRhs2qAlXq+jLHsn7RO0ry1JJJnuNU="
         self.assertTrue(await cmds.verifymessage(addr, sig, msg))
         self.assertFalse(await cmds.verifymessage(addr, sig+"trailinggarbage", msg))
 
@@ -439,7 +440,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         cmds = Commands(config=self.config)
         addr = "tb1qyla7xurmc4l9hd3adu2hx0kgscndsxy2snf2gg"
         sig = await cmds.signmessage(addr, "hello", wallet=wallet)
-        self.assertEqual("IEmhImhYOceJxpcdFc5NgtSEix3i9OYWPIY9uBO3WU08J4eWYby4oiMC1qS7ZgrbMidq4tKFGplUqZCAYeN2RX0=", sig)
+        self.assertEqual("IEx7YDfq9bUnYRMuEz2sepUnZ89H0t1SFfKmYGnfeDnOJ/Pvq4g0W+eYGCZp1Dv5k48/F1DVGW2HiSBdSoralr8=", sig)  # monacoin message magic
         self.assertTrue(await cmds.verifymessage(addr, sig, "hello"))
         self.assertFalse(await cmds.verifymessage(addr, sig, "hello!"))
         # on the CLI, surrounding whitespace is part of the message
@@ -534,6 +535,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.assertEqual("02000000000101b9723dfc69af058ef6613539a000d2cd098a2c8a74e802b6d8739db708ba8c9a0100000000fdffffff02a00f00000000000016001429e1fd187f0cac845946ae1b11dc136c536bfc0f84b2000000000000160014100611bcb3aee7aad176936cf4ed56ade03027aa0247304402203aa63539b673a3bd70a76482b17f35f8843974fab28f84143a00450789010bc40220779c2ce2d0217f973f1f6c9f718e19fc7ebd14dd8821a962f002437cda3082ec012102ee3f00141178006c78b0b458aab21588388335078c655459afe544211f15aee000000000",
                          await cmds.bumpfee(tx=orig_rawtx, new_fee_rate='1.6', from_coins="9a8cba08b79d73d8b602e8748a2c8a09cdd200a0393561f68e05af69fc3d72b9:1", wallet=wallet))
 
+    @upstream_relay_feerate()  # the expected replacement tx has upstream's min relay fee baked in
     async def test_dscancel(self):
         wallet = restore_wallet_from_text__for_unittest(
             'right nominee cheese afford exotic pilot mask illness rug fringe degree pottery',

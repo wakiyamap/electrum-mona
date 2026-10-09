@@ -434,7 +434,7 @@ class TestChannel(ElectrumTestCase):
         self.assertEqual(bob_channel.total_msat(RECEIVED), one_bitcoin_in_msat, "bob satoshis received incorrect")
         self.assertEqual(bob_channel.total_msat(SENT), 5 * one_bitcoin_in_msat, "bob satoshis sent incorrect")
 
-    def alice_to_bob_fee_update(self, fee=1111):
+    def alice_to_bob_fee_update(self, fee=111100):  # monacoin: must be >= FEERATE_PER_KW_MIN_RELAY_LIGHTNING
         aoldctx = self.alice_channel.get_next_commitment(REMOTE).outputs()
         self.alice_channel.update_fee(fee, True)
         anewctx = self.alice_channel.get_next_commitment(REMOTE).outputs()
