@@ -323,7 +323,7 @@ class DigitalBitbox_Client(HardwareClientBase):
 
     def dbb_generate_wallet(self):
         key = self.stretch_key(self.password)
-        filename = ("Electrum-" + time.strftime("%Y-%m-%d-%H-%M-%S") + ".pdf")
+        filename = ("Electrum-mona-" + time.strftime("%Y-%m-%d-%H-%M-%S") + ".pdf")
         msg = ('{"seed":{"source": "create", "key": "%s", "filename": "%s", "entropy": "%s"}}' % (key, filename, to_hexstr(crandom.get_rand_bytes(32)))).encode('utf8')
         reply = self.hid_send_encrypt(msg)
         if 'error' in reply:

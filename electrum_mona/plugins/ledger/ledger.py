@@ -326,6 +326,12 @@ class Ledger_Client(HardwareClientBase, ABC):
         hid_device.path = device.path
         hid_device.open()
         transport = ledger_bitcoin.TransportClient('hid', hid=hid_device)
+        # TODO monacoin: untested with hardware. There is no Monacoin app for Ledger; as before, the user
+        #   has to open a Bitcoin app that speaks the legacy protocol and allows m/*'/22' paths (the
+        #   "Bitcoin Legacy" app, or a "Bitcoin" app older than 2.1), which selects Ledger_Client_Legacy.
+        #   Ledger_Client_New (Bitcoin app >= 2.1) is unchanged from upstream and not expected to work:
+        #   recent apps only derive coin type 0' paths, and the app considers only coin type 0' policies
+        #   "standard", while is_policy_standard() is called with constants.net.BIP44_COIN_TYPE below.
         try:
             cl = ledger_bitcoin.createClient(transport, chain=get_chain())
         except (ledger_bitcoin.exception.errors.InsNotSupportedError,
