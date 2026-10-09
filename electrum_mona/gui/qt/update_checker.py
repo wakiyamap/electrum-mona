@@ -16,16 +16,15 @@ from electrum_mona.i18n import _
 from electrum_mona.util import make_aiohttp_session
 from electrum_mona.logging import Logger
 from electrum_mona.network import Network
-from electrum_mona._vendor.distutils.version import StrictVersion
+from electrum_mona._vendor.distutils.version import LooseVersion
 
 
 class UpdateCheck(QDialog, Logger):
-    url = "https://electrum.org/version"
-    download_url = "https://electrum.org/#download"
+    url = "https://electrum-mona.org/version"
+    download_url = "https://electrum-mona.org"
 
     VERSION_ANNOUNCEMENT_SIGNING_KEYS = (
-        "13xjmVAB1EATPP8RshTE8S8sNwwSUM9p1P",  # ThomasV (since 3.3.4)
-        "1Nxgk6NTooV4qZsX5fdqQwrLjYcsQZAfTg",  # ghost43 (since 4.1.2)
+        "MUJ1nBxpAzdGdNhTN1x3MCtyeBa4DbdqpK",
     )
 
     def __init__(self, *, latest_version=None):
@@ -76,7 +75,7 @@ class UpdateCheck(QDialog, Logger):
 
     @staticmethod
     def is_newer(latest_version):
-        return latest_version > StrictVersion(version.ELECTRUM_VERSION)
+        return latest_version > LooseVersion(version.ELECTRUM_VERSION)
 
     def update_view(self, latest_version=None):
         if latest_version:
@@ -132,7 +131,7 @@ class UpdateCheckThread(QThread, Logger):
                         break
                 else:
                     raise Exception('no valid signature for version announcement')
-                return StrictVersion(version_num.strip())
+                return LooseVersion(version_num.strip())
 
     def run(self):
         if not self.network:

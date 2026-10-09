@@ -113,7 +113,7 @@ class InvoiceList(MyTreeView):
             if item.is_lightning():
                 icon_name = 'lightning.png'
             else:
-                icon_name = 'bitcoin.png'
+                icon_name = 'monacoin.png'
             status = self.wallet.get_invoice_status(item)
             amount = item.get_amount_sat()
             amount_str = self.main_window.format_amount(amount, whitespaces=True) if amount else ""

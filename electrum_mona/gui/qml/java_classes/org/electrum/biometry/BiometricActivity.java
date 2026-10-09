@@ -54,7 +54,7 @@ public class BiometricActivity extends Activity {
 
         Executor executor = getMainExecutor();
         BiometricPrompt biometricPrompt = new BiometricPrompt.Builder(this)
-                .setTitle("Electrum Wallet")
+                .setTitle("Electrum-MONA Wallet")
                 .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG | BiometricManager.Authenticators.DEVICE_CREDENTIAL)
                 .setSubtitle(authMessage)
                 .build();

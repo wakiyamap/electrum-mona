@@ -73,9 +73,9 @@ ElDialog {
                         helptext: qsTr('This will create a transaction sending all funds associated with the private keys to the current wallet') +
                         '<br/><br/>' + qsTr('WIF keys are typed in Electrum, based on script type.') + '<br/><br/>' +
                         qsTr('A few examples') + ':<br/>' +
-                        '<tt><b>p2pkh</b>:KxZcY47uGp9a...       \t-> 1DckmggQM...<br/>' +
-                        '<b>p2wpkh-p2sh</b>:KxZcY47uGp9a... \t-> 3NhNeZQXF...<br/>' +
-                        '<b>p2wpkh</b>:KxZcY47uGp9a...      \t-> bc1q3fjfk...</tt>'
+                        '<tt><b>p2pkh</b>:T8vPbnoUs5Ci...       \t-> MWLEbTAW6...<br/>' +
+                        '<b>p2wpkh-p2sh</b>:T8vPbnoUs5Ci... \t-> PStEWT3Zs...<br/>' +
+                        '<b>p2wpkh</b>:T8vPbnoUs5Ci...      \t-> mona1q7cg...</tt>'
                     }
                 }
                 RowLayout {
