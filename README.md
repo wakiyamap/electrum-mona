@@ -152,6 +152,22 @@ To run a single file, specify it directly like this:
 $ pytest tests/test_bitcoin.py -v
 ```
 
+## Verifying downloads
+
+Each release file comes with a detached GPG signature (`<file>.asc`), made with
+the key in [`pubkeys/wakiyamap.asc`](pubkeys/wakiyamap.asc)
+(fingerprint `3155 25E8 11D5 E586 F3CA  C032 9C74 0BEC 897C E499`):
+
+```
+$ gpg --import pubkeys/wakiyamap.asc
+$ gpg --verify Electrum-MONA-x.y.z.tar.gz.asc Electrum-MONA-x.y.z.tar.gz
+```
+
+`Good signature from "wakiyamap ..."` and the fingerprint above mean the file is
+the one that was released. (gpg also warns that the key is not certified with a
+trusted signature unless you have marked it as trusted; that is expected.)
+
+
 ## Creating Binaries
 
 - [Linux (tarball)](contrib/build-linux/sdist/README.md)
