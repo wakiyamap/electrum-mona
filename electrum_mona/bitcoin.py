@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 COINBASE_MATURITY = 100
 COIN = 100000000
-TOTAL_COIN_SUPPLY_LIMIT_IN_BTC = 21000000
+TOTAL_COIN_SUPPLY_LIMIT_IN_BTC = 105120000
 
 NLOCKTIME_MIN = 0
 NLOCKTIME_BLOCKHEIGHT_MAX = 500_000_000 - 1
@@ -450,7 +450,7 @@ def address_to_script(addr: str, *, net=None) -> bytes:
     addrtype, hash_160_ = b58_address_to_hash160(addr)
     if addrtype == net.ADDRTYPE_P2PKH:
         script = pubkeyhash_to_p2pkh_script(hash_160_)
-    elif addrtype == net.ADDRTYPE_P2SH:
+    elif addrtype in [net.ADDRTYPE_P2SH, net.ADDRTYPE_P2SH_ALT]:
         script = construct_script([opcodes.OP_HASH160, hash_160_, opcodes.OP_EQUAL])
     else:
         raise BitcoinException(f'unknown address type: {addrtype}')
@@ -503,7 +503,7 @@ def address_to_payload(addr: str, *, net=None) -> Tuple[OnchainOutputType, bytes
     addrtype, hash_160_ = b58_address_to_hash160(addr)
     if addrtype == net.ADDRTYPE_P2PKH:
         return OnchainOutputType.P2PKH, hash_160_
-    elif addrtype == net.ADDRTYPE_P2SH:
+    elif addrtype in [net.ADDRTYPE_P2SH, net.ADDRTYPE_P2SH_ALT]:
         return OnchainOutputType.P2SH, hash_160_
     raise BitcoinException(f"unknown address type: {addrtype}")
 
@@ -734,7 +734,7 @@ def is_b58_address(addr: str, *, net=None) -> bool:
         addrtype, h = b58_address_to_hash160(addr)
     except Exception as e:
         return False
-    if addrtype not in [net.ADDRTYPE_P2PKH, net.ADDRTYPE_P2SH]:
+    if addrtype not in [net.ADDRTYPE_P2PKH, net.ADDRTYPE_P2SH, net.ADDRTYPE_P2SH_ALT]:
         return False
     return True
 
@@ -881,7 +881,7 @@ def control_block_for_taproot_script_spend(
 # user message signing
 def usermessage_magic(message: bytes) -> bytes:
     length = var_int(len(message))
-    return b"\x18Bitcoin Signed Message:\n" + length + message
+    return b"\x19Monacoin Signed Message:\n" + length + message
 
 
 def ecdsa_sign_usermessage(ec_privkey, message: Union[bytes, str], *, is_compressed: bool) -> bytes:

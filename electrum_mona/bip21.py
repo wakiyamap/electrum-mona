@@ -10,7 +10,7 @@ from .bitcoin import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
 from .bolt11 import decode_bolt11_invoice, BOLT11DecodeException
 
 # note: when checking against these, use .lower() to support case-insensitivity
-BITCOIN_BIP21_URI_SCHEME = 'bitcoin'
+BITCOIN_BIP21_URI_SCHEME = 'monacoin'
 LIGHTNING_URI_SCHEME = 'lightning'
 
 # note: URI scheme handler registrations are duplicated all over the codebase:
@@ -32,12 +32,12 @@ def parse_bip21_URI(uri: str) -> dict:
 
     if ':' not in uri:
         if not bitcoin.is_address(uri):
-            raise InvalidBitcoinURI("Not a bitcoin address")
+            raise InvalidBitcoinURI("Not a monacoin address")
         return {'address': uri}
 
     u = urllib.parse.urlparse(uri)
     if u.scheme.lower() != BITCOIN_BIP21_URI_SCHEME:
-        raise InvalidBitcoinURI("Not a bitcoin URI")
+        raise InvalidBitcoinURI("Not a monacoin URI")
     address = u.path
 
     # python for android fails to parse query
@@ -57,7 +57,7 @@ def parse_bip21_URI(uri: str) -> dict:
     out = {k: v[0] for k, v in pq.items()}
     if address:
         if not bitcoin.is_address(address):
-            raise InvalidBitcoinURI(f"Invalid bitcoin address: {address}")
+            raise InvalidBitcoinURI(f"Invalid monacoin address: {address}")
         out['address'] = address
     if 'amount' in out:
         am = out['amount']

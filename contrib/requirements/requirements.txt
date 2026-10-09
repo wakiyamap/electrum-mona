@@ -7,6 +7,7 @@ certifi
 jsonpatch
 electrum_ecc>=0.0.4,<0.1
 electrum_aionostr>=0.1.0,<0.2
+lyra2re2_hash>=1.1.2
 
 # - upper limit to avoid needing hatchling at build-time :/
 #   (however newer versions should work at runtime)

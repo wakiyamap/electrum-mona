@@ -97,11 +97,11 @@ def all_subclasses(cls) -> Set:
 ca_path = certifi.where()
 
 
-base_units = {'BTC':8, 'mBTC':5, 'bits':2, 'sat':0}
+base_units = {'MONA':8, 'mMona':5, 'bits':2, 'sat':0}
 base_units_inverse = inv_dict(base_units)
-base_units_list = ['BTC', 'mBTC', 'bits', 'sat']  # list(dict) does not guarantee order
+base_units_list = ['MONA', 'mMona', 'bits', 'sat']  # list(dict) does not guarantee order
 
-DECIMAL_POINT_DEFAULT = 5  # mBTC
+DECIMAL_POINT_DEFAULT = 8  # MONA
 
 
 class UnknownBaseUnit(Exception): pass
@@ -698,11 +698,11 @@ def user_dir():
     elif 'ANDROID_DATA' in os.environ:
         return android_data_dir()
     elif os.name == 'posix':
-        return os.path.join(os.environ["HOME"], ".electrum")
+        return os.path.join(os.environ["HOME"], ".electrum-mona")
     elif "APPDATA" in os.environ:
-        return os.path.join(os.environ["APPDATA"], "Electrum")
+        return os.path.join(os.environ["APPDATA"], "Electrum-MONA")
     elif "LOCALAPPDATA" in os.environ:
-        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum")
+        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-MONA")
     else:
         #raise Exception("No home directory found in environment variables.")
         return
@@ -968,54 +968,34 @@ def delta_time_str(distance_in_time: timedelta, *, include_seconds: bool = False
 
 
 mainnet_block_explorers = {
-    '3xpl.com': ('https://3xpl.com/bitcoin/',
-                        {'tx': 'transaction/', 'addr': 'address/'}),
-    'Bitflyer.jp': ('https://chainflyer.bitflyer.jp/',
-                        {'tx': 'Transaction/', 'addr': 'Address/'}),
-    'Blockchain.info': ('https://blockchain.com/btc/',
+    'bchain.info': ('https://bchain.info/MONA/',
+                        {'tx': 'tx/', 'addr': 'addr/'}),
+    'esplora': ('https://esplora.electrum-mona.org/',
                         {'tx': 'tx/', 'addr': 'address/'}),
-    'Blockstream.info': ('https://blockstream.info/',
+    'insight.monaco-ex.org': ('https://mona.insight.monaco-ex.org/insight/',
                         {'tx': 'tx/', 'addr': 'address/'}),
-    'Bitaps.com': ('https://btc.bitaps.com/',
-                        {'tx': '', 'addr': ''}),
-    'BTC.com': ('https://btc.com/',
-                        {'tx': '', 'addr': ''}),
-    'Chain.so': ('https://www.chain.so/',
-                        {'tx': 'tx/BTC/', 'addr': 'address/BTC/'}),
-    'Insight.is': ('https://insight.bitpay.com/',
+    'insight.electrum-mona.org': ('https://insight.electrum-mona.org/insight/',
                         {'tx': 'tx/', 'addr': 'address/'}),
-    'BlockCypher.com': ('https://live.blockcypher.com/btc/',
+    'mona.chainseeker.info': ('https://mona.chainseeker.info/',
+                        {'tx': 'tx/', 'addr': 'addr/'}),
+    'blockbook.electrum-mona.org': ('https://blockbook.electrum-mona.org/',
                         {'tx': 'tx/', 'addr': 'address/'}),
-    'Blockchair.com': ('https://blockchair.com/bitcoin/',
-                        {'tx': 'transaction/', 'addr': 'address/'}),
-    'blockonomics.co': ('https://www.blockonomics.co/',
-                        {'tx': 'api/tx?txid=', 'addr': '#/search?q='}),
-    'mempool.space': ('https://mempool.space/',
-                        {'tx': 'tx/', 'addr': 'address/'}),
-    'mempool.emzy.de': ('https://mempool.emzy.de/',
-                        {'tx': 'tx/', 'addr': 'address/'}),
-    'OXT.me': ('https://oxt.me/',
-                        {'tx': 'transaction/', 'addr': 'address/'}),
-    'mynode.local': ('http://mynode.local:3002/',
+    'chaintools.mona-coin.de': ('https://chaintools.mona-coin.de/',
                         {'tx': 'tx/', 'addr': 'address/'}),
     'system default': ('blockchain:/',
                         {'tx': 'tx/', 'addr': 'address/'}),
+    'Tokenview': ('https://tokenview.com/cn/',
+                        {'tx': 'search/', 'addr': 'search/'}),
 }
 
 testnet_block_explorers = {
-    'Bitaps.com': ('https://tbtc.bitaps.com/',
-                       {'tx': '', 'addr': ''}),
-    'BlockCypher.com': ('https://live.blockcypher.com/btc-testnet/',
-                       {'tx': 'tx/', 'addr': 'address/'}),
-    'Blockchain.info': ('https://www.blockchain.com/btc-testnet/',
-                       {'tx': 'tx/', 'addr': 'address/'}),
-    'Blockstream.info': ('https://blockstream.info/testnet/',
+    'esplora': ('https://esplora.electrum-mona.org/testnet/',
                         {'tx': 'tx/', 'addr': 'address/'}),
-    'mempool.space': ('https://mempool.space/testnet/',
+    'testnet.blockbook.electrum-mona.org': ('https://testnet-blockbook.electrum-mona.org/',
                         {'tx': 'tx/', 'addr': 'address/'}),
-    'smartbit.com.au': ('https://testnet.smartbit.com.au/',
-                       {'tx': 'tx/', 'addr': 'address/'}),
-    'system default': ('blockchain://000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943/',
+    'insight.monaco-ex.org': ('https://testnet-mona.insight.monaco-ex.org/insight/',
+                        {'tx': 'tx/', 'addr': 'address/'}),
+    'system default': ('blockchain:',
                        {'tx': 'tx/', 'addr': 'address/'}),
 }
 

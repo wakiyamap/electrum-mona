@@ -17,17 +17,17 @@ if TYPE_CHECKING:
 FEE_ETA_TARGETS = [1008, 144, 25, 10, 5, 2, 1]
 FEE_DEPTH_TARGETS = [10_000_000, 5_000_000, 2_000_000, 1_000_000,
                      800_000, 600_000, 400_000, 250_000, 100_000]
-FEERATE_STATIC_VALUES = [1000, 2000, 5000, 10000, 20000, 30000,
-                         50000, 70000, 100000, 150000, 200000, 300000]
+FEERATE_STATIC_VALUES = [10000, 20000, 30000, 50000, 70000, 100000,
+                         150000, 200000, 300000, 500000]
 
 # satoshi per kbyte
-FEERATE_MAX_DYNAMIC = 1500000
+FEERATE_MAX_DYNAMIC = 1000000
 FEERATE_WARNING_HIGH_FEE = 600000
-FEERATE_FALLBACK_STATIC_FEE = 150000
+FEERATE_FALLBACK_STATIC_FEE = 400000
 FEERATE_REGTEST_STATIC_FEE = FEERATE_FALLBACK_STATIC_FEE  # hardcoded fee used on regtest
 FEERATE_MIN_RELAY = 100
-FEERATE_DEFAULT_RELAY = 1000  # conservative "min relay fee"
-FEERATE_MAX_RELAY = 50000
+FEERATE_DEFAULT_RELAY = 100000  # conservative "min relay fee"
+FEERATE_MAX_RELAY = 500000
 assert FEERATE_MIN_RELAY <= FEERATE_DEFAULT_RELAY <= FEERATE_MAX_RELAY
 
 # warn user if fee/amount for on-chain tx is higher than this
@@ -43,7 +43,7 @@ FEE_LN_MINIMUM_ETA_TARGET = 1008
 # the resulting onchain tx pays the min relay fee.
 # This would be FEERATE_DEFAULT_RELAY / 4 if not for rounding errors,
 # see https://github.com/ElementsProject/lightning/commit/2e687b9b352c9092b5e8bd4a688916ac50b44af0
-FEERATE_PER_KW_MIN_RELAY_LIGHTNING = 253
+FEERATE_PER_KW_MIN_RELAY_LIGHTNING = 25300
 
 
 def closest_index(value, array) -> int:

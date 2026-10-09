@@ -892,7 +892,7 @@ Warning: setting this to too low will result in lots of payment failures."""),
     )
 
     BLOCK_EXPLORER = ConfigVar(
-        'block_explorer', default='Blockstream.info', type_=str,
+        'block_explorer', default='blockbook.electrum-mona.org', type_=str,
         short_desc=lambda: _('Online Block Explorer'),
         long_desc=lambda: _('Choose which online block explorer to use for functions that open a web browser'),
     )
