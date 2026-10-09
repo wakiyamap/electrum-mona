@@ -74,7 +74,7 @@ from electrum_mona.simple_config import SimpleConfig
 from electrum_mona.logging import Logger
 from electrum_mona.lntransport import extract_nodeid, ConnStringFormatError
 from electrum_mona.bolt11 import decode_bolt11_invoice, BOLT11Addr
-from electrum_mona.submarine_swaps import SwapServerTransport, NostrTransport
+from electrum_mona.submarine_swaps import SwapServerTransport, NostrTransport, SUBMARINE_SWAPS_AVAILABLE
 from electrum_mona.fee_policy import FeePolicy
 
 from electrum_mona.gui.common_qt.util import TaskThread, QtEventListener, qt_event_listener
@@ -1264,6 +1264,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         channels: Optional[Sequence['Channel']] = None,
         get_coins: Optional[Callable[..., Sequence[PartialTxInput]]] = None,
     ) -> bool:
+        if not SUBMARINE_SWAPS_AVAILABLE:
+            self.show_error(_("Submarine swaps are not available for Monacoin."))
+            return False
         if not self.network:
             self.show_error(_("You are offline."))
             return False
