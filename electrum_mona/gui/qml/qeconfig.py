@@ -101,7 +101,7 @@ class QEConfig(AuthMixin, QObject):
         decimal_point = base_unit_name_to_decimal_point(self.config.get_base_unit())
         max_digits_before_dp = (
             len(str(TOTAL_COIN_SUPPLY_LIMIT_IN_BTC))
-            + (base_unit_name_to_decimal_point("BTC") - decimal_point))
+            + (base_unit_name_to_decimal_point("MONA") - decimal_point))
         exp = '^[0-9]{0,%d}' % max_digits_before_dp
         decimal_point += extra_precision
         if decimal_point > 0:
