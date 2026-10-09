@@ -171,6 +171,19 @@ def _construct_swap_scriptcode(
     )
 
 
+# Electrum-MONA: there are no submarine swap providers for Monacoin (yet), so the GUIs do
+# not offer swaps while this is False.
+SUBMARINE_SWAPS_AVAILABLE = False
+
+
+def nostr_network_tag() -> str:
+    """Tag under which swap offers are announced and looked up on nostr.
+    Upstream uses "net:<NET_NAME>" for Bitcoin. Our NET_NAMEs are the same ("mainnet", ...),
+    so a namespace of our own makes sure Bitcoin swap servers are never picked up.
+    """
+    return f"net:monacoin-{constants.net.NET_NAME}"
+
+
 class SwapServerError(Exception):
     def __init__(self, message=None):
         self.message = message
@@ -2045,7 +2058,7 @@ class NostrTransport(SwapServerTransport):
         }
         # the first value of a single letter tag is indexed and can be filtered for
         tags = [['d', f'electrum-swapserver-{self.NOSTR_EVENT_VERSION}'],
-                ['r', 'net:' + constants.net.NET_NAME],
+                ['r', nostr_network_tag()],
                 ['expiration', str(now() + self.OFFER_UPDATE_INTERVAL_SEC + 10)]]
         try:
             event_id = await aionostr._add_event(
@@ -2103,7 +2116,7 @@ class NostrTransport(SwapServerTransport):
             "kinds": [self.USER_STATUS_NIP38],
             "limit": 10,
             "#d": [f"electrum-swapserver-{self.NOSTR_EVENT_VERSION}"],
-            "#r": [f"net:{constants.net.NET_NAME}"],
+            "#r": [nostr_network_tag()],
             "since": now() - 60 * 60,
         }
         async for event in self.relay_manager.get_events(query, single_event=False, only_stored=False):
@@ -2117,7 +2130,7 @@ class NostrTransport(SwapServerTransport):
                 continue
             if tags.get('d') != f"electrum-swapserver-{self.NOSTR_EVENT_VERSION}":
                 continue
-            if tags.get('r') != f"net:{constants.net.NET_NAME}":
+            if tags.get('r') != nostr_network_tag():
                 continue
             if (event.created_at > now() + 60 * 60
                     or event.created_at < now() - 60 * 60):

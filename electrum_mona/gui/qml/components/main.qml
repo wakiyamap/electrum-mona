@@ -921,7 +921,19 @@ ApplicationWindow
         dialog.open()
     }
 
+    // Electrum-MONA: there are no submarine swap providers for Monacoin (yet)
+    readonly property bool submarineSwapsAvailable: false
+
     function startSwap() {
+        if (!submarineSwapsAvailable) {
+            var dialog = app.messageDialog.createObject(app, {
+                title: qsTr('Error'),
+                iconSource: Qt.resolvedUrl('../../icons/warning.png'),
+                text: qsTr('Submarine swaps are not available for Monacoin.')
+            })
+            dialog.open()
+            return
+        }
         var swapdialog = swapDialog.createObject(app)
         swapdialog.open()
     }

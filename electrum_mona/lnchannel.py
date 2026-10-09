@@ -797,7 +797,7 @@ class Channel(AbstractChannel):
     #       TODO enforce this ^
 
     # our forwarding parameters for forwarding HTLCs through this channel
-    forwarding_cltv_delta = 144
+    forwarding_cltv_delta = 960
     forwarding_fee_base_msat = 1000
     forwarding_fee_proportional_millionths = 1
 

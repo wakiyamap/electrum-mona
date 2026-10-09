@@ -4293,7 +4293,7 @@ class LNWallet(Logger):
 
         if budget.fee_msat < (1000 if not direct_channels else 0):
             raise OnionRoutingFailure(code=OnionFailureCode.TRAMPOLINE_FEE_INSUFFICIENT, data=b'')
-        if budget.cltv < (576 if not direct_channels else 0):
+        if budget.cltv < (960 if not direct_channels else 0):
             raise OnionRoutingFailure(code=OnionFailureCode.TRAMPOLINE_EXPIRY_TOO_SOON, data=b'')
 
         try:

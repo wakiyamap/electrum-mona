@@ -40,14 +40,12 @@ _logger = get_logger(__name__)
 # hardcoded list
 # TODO for some pubkeys, there are multiple network addresses we could try
 TRAMPOLINE_NODES_MAINNET = {
-    'ACINQ':                  LNPeerAddr(host='node.acinq.co',           port=9735, pubkey=bytes.fromhex('03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f')),
-    'Electrum trampoline':    LNPeerAddr(host='lightning.electrum.org',  port=9740, pubkey=bytes.fromhex('03ecef675be448b615e6176424070673ef8284e0fd19d8be062a6cb5b130a0a0d1')),
-    'trampoline hodlisterco': LNPeerAddr(host='trampoline.hodlister.co', port=9740, pubkey=bytes.fromhex('02ce014625788a61411398f83c945375663972716029ef9d8916719141dc109a1c')),
+    'x tamafo': LNPeerAddr(host='electrumx.tamami-foundation.org', port=9735, pubkey=bytes.fromhex('02af0e7b05a3fd83d1ecfcf9fd1416e6a7052fcd4d6a82aa4632a0de3f20787a15')),
+    'x1 ninja': LNPeerAddr(host='electrumx1.monacoin.ninja', port=9736, pubkey=bytes.fromhex('03bb4962b8abf8a30574881631a4f1529c50dc1bfb64a173e05a05b84f15d4f9a2')),
 }
 
 TRAMPOLINE_NODES_TESTNET = {
-    'endurance': LNPeerAddr(host='34.250.234.192', port=9735, pubkey=bytes.fromhex('03933884aaf1d6b108397e5efe5c86bcf2d8ca8d2f700eda99db9214fc2712b134')),
-    'Electrum trampoline': LNPeerAddr(host='lightning.electrum.org', port=9739, pubkey=bytes.fromhex('02bf82e22f99dcd7ac1de4aad5152ce48f0694c46ec582567f379e0adbf81e2d0f')),
+    'x tamafo': LNPeerAddr(host='testnet-eclair.tamami-foundation.org', port=9735, pubkey=bytes.fromhex('0289141da174653124929121ab010631158ada2f18dbe3f33e4959f277b33a5049')),
 }
 
 TRAMPOLINE_NODES_TESTNET4 = {}
@@ -209,7 +207,7 @@ def _extend_trampoline_route(
     # note: trampoline nodes are supposed to advertise their fee and cltv in node_update message.
     #       However, in the temporary spec, they do not.
     #       They also don't send their fee policy in the error message if we lowball the fee...
-    fee_base, fee_proportional, cltv_delta = fee_info if fee_info else (PLACEHOLDER_FEE, PLACEHOLDER_FEE, 576)
+    fee_base, fee_proportional, cltv_delta = fee_info if fee_info else (PLACEHOLDER_FEE, PLACEHOLDER_FEE, 960)
     route.append(
         TrampolineEdge(
             start_node=start_node,

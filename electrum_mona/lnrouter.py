@@ -556,7 +556,7 @@ class LNPathFinder(Logger):
                 end_node=end_node,
                 node_info=node_info)
         # Cap cltv of any given edge at 2 weeks (the cost function would not work well for extreme cases)
-        if route_edge.cltv_delta > 14 * 144:
+        if route_edge.cltv_delta > 14 * 960:
             return float('inf'), 0
         # Distance metric notes:  # TODO constants are ad-hoc
         # ( somewhat based on https://github.com/lightningnetwork/lnd/pull/1358 )

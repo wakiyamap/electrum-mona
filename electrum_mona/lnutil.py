@@ -27,7 +27,7 @@ from .transaction import (
 from . import bitcoin, crypto, transaction, descriptor, segwit_addr
 from . import crandom
 from .bitcoin import redeem_script_to_address, address_to_script, construct_witness, \
-    construct_script, NLOCKTIME_BLOCKHEIGHT_MAX
+    construct_script, NLOCKTIME_BLOCKHEIGHT_MAX, COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
 from .i18n import _
 from .bip32 import BIP32Node, BIP32_PRIME
 from .transaction import BCDataStream, OPPushDataGeneric
@@ -56,7 +56,8 @@ COMMITMENT_TX_WEIGHT_ANCHORS = 1124
 HTLC_OUTPUT_WEIGHT = 172
 FIXED_ANCHOR_SAT = 330
 
-LN_MAX_FUNDING_SAT_LEGACY = pow(2, 24) - 1
+# Monacoin: 2^24 - 1 sat would be ~0.17 MONA. Electrum-mona never enforced that cap.
+LN_MAX_FUNDING_SAT_LEGACY = TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN
 
 # We should tolerate higher-ish "dust_limit_sat" for channels,
 # however we cannot set this too high until we implement "max_dust_htlc_exposure_msat".
@@ -577,7 +578,7 @@ REDEEM_AFTER_DOUBLE_SPENT_DELAY = 30
 
 # timeout after which we forget incoming channels if the funding tx has no confirmation
 # https://github.com/lightning/bolts/commit/ba00bf8f4cd85f21bacfc03adcafd4acc7d68382
-CHANNEL_OPENING_TIMEOUT_BLOCKS = 2016
+CHANNEL_OPENING_TIMEOUT_BLOCKS = 13440  # monacoin: 2 weeks of 1.5 min blocks
 CHANNEL_OPENING_TIMEOUT_SEC = 14*24*60*60  # 2 weeks
 
 # Small capacity channels are problematic for many reasons. As the onchain fees start to become
@@ -594,7 +595,7 @@ MIN_FUNDING_SAT = 200_000
 
 # the minimum cltv_expiry accepted for newly received HTLCs
 # note: when changing, consider Blockchain.is_tip_stale()
-MIN_FINAL_CLTV_DELTA_ACCEPTED = 144
+MIN_FINAL_CLTV_DELTA_ACCEPTED = 960  # monacoin: 1 day of 1.5 min blocks
 
 # buffer added to min_final_cltv_delta of created bolt11 invoices to make verifying the cltv delta
 # of incoming payment htlcs reliable even if some blocks have been mined during forwarding
@@ -608,11 +609,11 @@ NBLOCK_DEADLINE_DELTA_AFTER_EXPIRY_FOR_OFFERED_HTLCS = 1
 # "the deadline for received HTLCs this node has fulfilled": (BOLT-02)
 # "the deadline after which the channel has to be failed and the HTLC fulfilled on-chain before its cltv_expiry"
 # ("a deadline of 2R+G+S blocks before cltv_expiry")
-NBLOCK_DEADLINE_DELTA_BEFORE_EXPIRY_FOR_RECEIVED_HTLCS = 72
+NBLOCK_DEADLINE_DELTA_BEFORE_EXPIRY_FOR_RECEIVED_HTLCS = 480
 
-NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE = 28 * 144
+NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE = 28 * 960
 
-MAXIMUM_REMOTE_TO_SELF_DELAY_ACCEPTED = 2016
+MAXIMUM_REMOTE_TO_SELF_DELAY_ACCEPTED = 13440
 
 # timeout after which we consider a zeroconf channel without funding tx to be failed
 ZEROCONF_TIMEOUT = 60 * 10
