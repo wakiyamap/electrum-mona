@@ -35,7 +35,7 @@ data_files = []
 if platform.system() in ['Linux', 'FreeBSD', 'DragonFly']:
     # note: we can't use absolute paths here. see #7787
     data_files += [
-        (os.path.join('share', 'applications'),               ['electrum.desktop']),
+        (os.path.join('share', 'applications'),               ['electrum-mona.desktop']),
         (os.path.join('share', 'pixmaps'),                    ['electrum_mona/gui/icons/electrum.png']),
         (os.path.join('share', 'icons/hicolor/128x128/apps'), ['electrum_mona/gui/icons/electrum.png']),
     ]
@@ -56,7 +56,7 @@ extras_require['fast'] = extras_require['crypto']
 
 
 setup(
-    name="Electrum",
+    name="Electrum-MONA",
     version=version.ELECTRUM_VERSION,
     python_requires='>={}'.format(MIN_PYTHON_VERSION),
     install_requires=requirements,
@@ -73,10 +73,10 @@ setup(
     include_package_data=True,
     scripts=['electrum_mona/electrum-mona'],
     data_files=data_files,
-    description="Lightweight Bitcoin Wallet",
+    description="Lightweight Monacoin Wallet",
     author="Thomas Voegtlin",
     author_email="thomasv@electrum.org",
     license="MIT Licence",
-    url="https://electrum.org",
-    long_description="""Lightweight Bitcoin Wallet""",
+    url="https://electrum-mona.org",
+    long_description="""Lightweight Monacoin Wallet""",
 )

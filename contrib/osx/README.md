@@ -89,10 +89,10 @@ Let brew install the Xcode CLI tools.
 
 #### 2. Build Electrum
 
-    cd electrum
+    cd electrum-mona
     ./contrib/osx/make_osx.sh
 
-This creates both a folder named Electrum.app and the .dmg file (both unsigned).
+This creates both a folder named Electrum-MONA.app and the .dmg file (both unsigned).
 
 ##### 2.1. For release binaries, here be dragons
 
@@ -117,7 +117,7 @@ repository.
 2. Use the provided `compare_dmg` script to compare the binary you built with
    the official release binary.
     ```
-    $ ./contrib/osx/compare_dmg dist/electrum-*.dmg electrum_dmg_official_release.dmg
+    $ ./contrib/osx/compare_dmg dist/electrum-mona-*.dmg electrum_dmg_official_release.dmg
     ```
    The `compare_dmg` script is mostly only needed as the official release binary is
    codesigned and notarized. Otherwise, the built `.app` bundles should be byte-identical.

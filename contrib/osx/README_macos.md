@@ -10,8 +10,8 @@
 
 ### 1. Check out the code from GitHub:
 ```
-$ git clone https://github.com/spesmilo/electrum.git
-$ cd electrum
+$ git clone https://github.com/wakiyamap/electrum-mona.git
+$ cd electrum-mona
 $ git submodule update --init
 ```
 
@@ -28,8 +28,9 @@ $ brew install autoconf automake libtool coreutils
 
 Run install (this should install the dependencies):
 ```
-$ python3 -m pip install --user -e ".[gui,crypto]"
+$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" python3 -m pip install --user -e ".[gui,crypto]"
 ```
+(the `CFLAGS` are needed to compile the `lyra2re2_hash` dependency correctly, see the main README)
 
 ### 4. Run electrum:
 ```
