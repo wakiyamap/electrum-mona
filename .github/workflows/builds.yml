@@ -10,7 +10,7 @@ on:
         required: true
         default: 'all'
         type: choice
-        options: [all, windows, android, appimage, tarball]
+        options: [all, windows, android, appimage, tarball, macos]
       android_arch:
         description: 'Android architecture (when running android)'
         required: false
@@ -198,6 +198,44 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}-${{ github.sha }}
           path: dist/*.tar.gz
+          retention-days: ${{ env.ARTIFACT_RETENTION }}
+          if-no-files-found: error
+          compression-level: 0
+
+  # Electrum-MONA: not part of upstream's workflow. Unsigned build, to be able to test on macOS
+  # without owning a mac. The build is x86_64-only (see ARCHFLAGS in make_osx.sh), so it needs
+  # an Intel runner; the result runs on Apple Silicon through Rosetta.
+  macos:
+    name: "build: macOS (unsigned)"
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'macos' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Cache macOS build (pip, native libs, pyinstaller)
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: contrib/osx/.cache
+          key: macos-build-${{ hashFiles('contrib/deterministic-build/*.txt', 'contrib/make_libsecp256k1.sh', 'contrib/make_libusb.sh', 'contrib/make_zbar.sh', 'contrib/osx/**', '!contrib/osx/.cache') }}
+
+      - name: Build macOS app
+        run: |
+          # make_osx.sh installs python from python.org and expects "python3" to be that one
+          export PATH="/Library/Frameworks/Python.framework/Versions/3.12/bin:$PATH"
+          ./contrib/osx/make_osx.sh
+
+      - name: List output
+        run: ls -lah dist/
+
+      - name: Upload macOS dmg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: electrum-mona-macos-${{ github.sha }}
+          path: dist/*.dmg
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
           compression-level: 0
