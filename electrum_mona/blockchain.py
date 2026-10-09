@@ -42,18 +42,24 @@ except ImportError:
 
 
 def _selftest_lyra2re2_hash() -> None:
-    """The C sources of lyra2re2_hash (sph BMW) break strict-aliasing rules, and recent
-    compilers miscompile them at -O2. That would silently reject every valid header,
-    so better to notice it right away. (test vector: mainnet header at height 2618875)
+    """lyra2re2_hash is an old C extension, and how it gets built matters:
+    - its sources (sph BMW) break strict-aliasing rules, and recent compilers miscompile
+      them at -O2. That would silently reject every valid header.
+    - it uses '#' argument formats without defining PY_SSIZE_T_CLEAN.
+    So better to notice a bad build right away. (test vector: mainnet header at height 2618875)
     """
     raw_header = bytes.fromhex(
         "000000207ef097f85c42eae5e53551c95a30c336a86b3958e9b2c99a44a16b4a4e5efb90c31ab1ae"
         "02f56e9391b2427f02f418410d864df97ff869d0ab6f03f0971960528a8f41620c6d041a88c2bf8b")
     expected = "000000000000006985a7b5e5f5984542519975f07d9160457c3667eb44e44d74"
-    if lyra2re2_hash.getPoWHash(raw_header)[::-1].hex() != expected:
-        sys.exit("Error: lyra2re2_hash returns wrong hashes: it was miscompiled. Please rebuild it with:\n"
-                 "  CFLAGS=-fno-strict-aliasing python3 -m pip install --force-reinstall --no-cache-dir "
-                 "--no-binary lyra2re2_hash lyra2re2_hash")
+    try:
+        pow_hash = lyra2re2_hash.getPoWHash(raw_header)[::-1].hex()
+    except SystemError:  # built without PY_SSIZE_T_CLEAN, which python 3.10 - 3.12 insist on
+        pow_hash = None
+    if pow_hash != expected:
+        sys.exit("Error: lyra2re2_hash does not work: it was miscompiled. Please rebuild it with:\n"
+                 "  CFLAGS='-fno-strict-aliasing -DPY_SSIZE_T_CLEAN' python3 -m pip install "
+                 "--force-reinstall --no-cache-dir --no-binary lyra2re2_hash lyra2re2_hash")
 
 
 _selftest_lyra2re2_hash()

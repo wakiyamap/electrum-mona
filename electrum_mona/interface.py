@@ -1624,7 +1624,7 @@ class Interface(Logger):
             return ''
         if not isinstance(res, str):
             raise RequestCorrupted(f'{res!r} should be a str')
-        address = res.removeprefix('bitcoin:')
+        address = res.removeprefix('monacoin:')
         if not bitcoin.is_address(address):
             # note: do not hard-fail -- allow server to use future-type
             #       bitcoin address we do not recognize
