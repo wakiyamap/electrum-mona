@@ -60,6 +60,9 @@ info "Building $pkgname..."
                 --with-x=no \
                 --enable-video=no \
                 --with-jpeg=no"
+            # The iconv of macOS 14+ fails the "working iconv" check of gettext's iconv.m4. configure
+            # then does not link libiconv, while the QR decoder uses it regardless ("Undefined symbols: _iconv").
+            export am_cv_func_iconv_works=yes
         else
             # linux target
             AUTOCONF_FLAGS="$AUTOCONF_FLAGS \
