@@ -25,16 +25,18 @@
 
 import queue
 from collections import defaultdict
-from typing import Sequence, Tuple, Optional, Dict, TYPE_CHECKING, Set
+from typing import Sequence, Tuple, Optional, Dict, TYPE_CHECKING, Set, Callable, NamedTuple
 import time
+import threading
 from threading import RLock
-import attr
 from math import inf
 
-from .util import profiler, with_lock, bh2u
+import attr
+
+from .util import profiler, with_lock, now
 from .logging import Logger
 from .lnutil import (NUM_MAX_EDGES_IN_PAYMENT_PATH, ShortChannelID, LnFeatures,
-                     NBLOCK_CLTV_EXPIRY_TOO_FAR_INTO_FUTURE)
+                     NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE, PaymentFeeBudget)
 from .channel_db import ChannelDB, Policy, NodeInfo
 
 if TYPE_CHECKING:
@@ -42,7 +44,6 @@ if TYPE_CHECKING:
 
 DEFAULT_PENALTY_BASE_MSAT = 500  # how much base fee we apply for unknown sending capability of a channel
 DEFAULT_PENALTY_PROPORTIONAL_MILLIONTH = 100  # how much relative fee we apply for unknown sending capability of a channel
-BLACKLIST_DURATION = 3600  # how long (in seconds) a channel remains blacklisted
 HINT_DURATION = 3600  # how long (in seconds) a liquidity hint remains valid
 
 
@@ -73,10 +74,10 @@ class PathEdge:
 
 @attr.s
 class RouteEdge(PathEdge):
-    fee_base_msat = attr.ib(type=int, kw_only=True)
-    fee_proportional_millionths = attr.ib(type=int, kw_only=True)
-    cltv_expiry_delta = attr.ib(type=int, kw_only=True)
-    node_features = attr.ib(type=int, kw_only=True, repr=lambda val: str(int(val)))  # note: for end node!
+    fee_base_msat = attr.ib(type=int, kw_only=True)                # for start_node
+    fee_proportional_millionths = attr.ib(type=int, kw_only=True)  # for start_node
+    cltv_delta = attr.ib(type=int, kw_only=True)                   # for start_node
+    node_features = attr.ib(type=int, kw_only=True, repr=lambda val: str(int(val)))  # note: for end_node!
 
     def fee_for_edge(self, amount_msat: int) -> int:
         return fee_for_edge_msat(forwarded_amount_msat=amount_msat,
@@ -87,7 +88,7 @@ class RouteEdge(PathEdge):
     def from_channel_policy(
             cls,
             *,
-            channel_policy: 'Policy',
+            channel_policy: 'Policy',  # for start_node
             short_channel_id: bytes,
             start_node: bytes,
             end_node: bytes,
@@ -102,19 +103,8 @@ class RouteEdge(PathEdge):
             short_channel_id=ShortChannelID.normalize(short_channel_id),
             fee_base_msat=channel_policy.fee_base_msat,
             fee_proportional_millionths=channel_policy.fee_proportional_millionths,
-            cltv_expiry_delta=channel_policy.cltv_expiry_delta,
+            cltv_delta=channel_policy.cltv_delta,
             node_features=node_info.features if node_info else 0)
-
-    def is_sane_to_use(self, amount_msat: int) -> bool:
-        # TODO revise ad-hoc heuristics
-        # cltv cannot be more than 2 weeks
-        # TODO monacoin is OK?
-        if self.cltv_expiry_delta > 14 * 960:
-            return False
-        total_fee = self.fee_for_edge(amount_msat)
-        if not is_fee_sane(total_fee, payment_amount_msat=amount_msat):
-            return False
-        return True
 
     def has_feature_varonion(self) -> bool:
         features = LnFeatures(self.node_features)
@@ -125,7 +115,7 @@ class RouteEdge(PathEdge):
 
 @attr.s
 class TrampolineEdge(RouteEdge):
-    invoice_routing_info = attr.ib(type=bytes, default=None)
+    invoice_routing_info = attr.ib(type=Sequence[bytes], default=None)
     invoice_features = attr.ib(type=int, default=None)
     # this is re-defined from parent just to specify a default value:
     short_channel_id = attr.ib(default=ShortChannelID(8), repr=lambda val: str(val))
@@ -136,145 +126,160 @@ class TrampolineEdge(RouteEdge):
 
 LNPaymentPath = Sequence[PathEdge]
 LNPaymentRoute = Sequence[RouteEdge]
+LNPaymentTRoute = Sequence[TrampolineEdge]
 
 
-def is_route_sane_to_use(route: LNPaymentRoute, invoice_amount_msat: int, min_final_cltv_expiry: int) -> bool:
+def is_route_within_budget(
+    route: LNPaymentRoute,
+    *,
+    budget: PaymentFeeBudget,
+    amount_msat_for_dest: int,  # that final receiver gets
+    cltv_delta_for_dest: int,   # that final receiver gets
+) -> bool:
     """Run some sanity checks on the whole route, before attempting to use it.
     called when we are paying; so e.g. lower cltv is better
     """
     if len(route) > NUM_MAX_EDGES_IN_PAYMENT_PATH:
         return False
-    amt = invoice_amount_msat
-    cltv = min_final_cltv_expiry
+    amt = amount_msat_for_dest
+    cltv_cost_of_route = 0  # excluding cltv_delta_for_dest
     for route_edge in reversed(route[1:]):
-        if not route_edge.is_sane_to_use(amt): return False
         amt += route_edge.fee_for_edge(amt)
-        cltv += route_edge.cltv_expiry_delta
-    total_fee = amt - invoice_amount_msat
-    # TODO revise ad-hoc heuristics
-    if cltv > NBLOCK_CLTV_EXPIRY_TOO_FAR_INTO_FUTURE:
+        cltv_cost_of_route += route_edge.cltv_delta
+    fee_cost = amt - amount_msat_for_dest
+    # check against budget
+    if cltv_cost_of_route > budget.cltv:
         return False
-    if not is_fee_sane(total_fee, payment_amount_msat=invoice_amount_msat):
+    if fee_cost > budget.fee_msat:
+        return False
+    # sanity check
+    total_cltv_delta = cltv_cost_of_route + cltv_delta_for_dest
+    if total_cltv_delta > NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE:
         return False
     return True
 
 
-def is_fee_sane(fee_msat: int, *, payment_amount_msat: int) -> bool:
-    # fees <= 5 sat are fine
-    if fee_msat <= 5_000:
-        return True
-    # fees <= 1 % of payment are fine
-    if 100 * fee_msat <= payment_amount_msat:
-        return True
-    return False
+class LiquidAmount(NamedTuple):
+    amount_msat: int
+    timestamp: int
+
+    @classmethod
+    def from_amount(cls, amount_msat: int) -> 'LiquidAmount':
+        return cls(amount_msat=amount_msat, timestamp=now())
+
+    def get_valid_amount(self) -> Optional[int]:
+        return None if self.is_invalid() else self.amount_msat
+
+    def is_invalid(self) -> bool:
+        return now() - self.timestamp > HINT_DURATION
 
 
 class LiquidityHint:
     """Encodes the amounts that can and cannot be sent over the direction of a
-    channel and whether the channel is blacklisted.
+    channel.
 
     A LiquidityHint is the value of a dict, which is keyed to node ids and the
     channel.
     """
     def __init__(self):
         # use "can_send_forward + can_send_backward < cannot_send_forward + cannot_send_backward" as a sanity check?
-        self._can_send_forward = None
-        self._cannot_send_forward = None
-        self._can_send_backward = None
-        self._cannot_send_backward = None
-        self.blacklist_timestamp = 0
-        self.hint_timestamp = 0
+        self._can_send_forward = None  # type: Optional[LiquidAmount]
+        self._cannot_send_forward = None  # type: Optional[LiquidAmount]
+        self._can_send_backward = None  # type: Optional[LiquidAmount]
+        self._cannot_send_backward = None  # type: Optional[LiquidAmount]
         self._inflight_htlcs_forward = 0
         self._inflight_htlcs_backward = 0
 
-    def is_hint_invalid(self) -> bool:
-        now = int(time.time())
-        return now - self.hint_timestamp > HINT_DURATION
-
     @property
-    def can_send_forward(self):
-        return None if self.is_hint_invalid() else self._can_send_forward
+    def can_send_forward(self) -> Optional[int]:
+        la = self._can_send_forward
+        return la.get_valid_amount() if la else None
 
     @can_send_forward.setter
-    def can_send_forward(self, amount):
+    def can_send_forward(self, amount_msat: int) -> None:
         # we don't want to record less significant info
         # (sendable amount is lower than known sendable amount):
-        if self._can_send_forward and self._can_send_forward > amount:
+        known = self.can_send_forward
+        if known is not None and known > amount_msat:
             return
-        self._can_send_forward = amount
+        self._can_send_forward = LiquidAmount.from_amount(amount_msat)
         # we make a sanity check that sendable amount is lower than not sendable amount
-        if self._cannot_send_forward and self._can_send_forward > self._cannot_send_forward:
+        if self._cannot_send_forward and self._can_send_forward.amount_msat > self._cannot_send_forward.amount_msat:
             self._cannot_send_forward = None
 
     @property
-    def can_send_backward(self):
-        return None if self.is_hint_invalid() else self._can_send_backward
+    def can_send_backward(self) -> Optional[int]:
+        la = self._can_send_backward
+        return la.get_valid_amount() if la else None
 
     @can_send_backward.setter
-    def can_send_backward(self, amount):
-        if self._can_send_backward and self._can_send_backward > amount:
+    def can_send_backward(self, amount_msat: int) -> None:
+        known = self.can_send_backward
+        if known is not None and known > amount_msat:
             return
-        self._can_send_backward = amount
-        if self._cannot_send_backward and self._can_send_backward > self._cannot_send_backward:
+        self._can_send_backward = LiquidAmount.from_amount(amount_msat)
+        if self._cannot_send_backward and self._can_send_backward.amount_msat > self._cannot_send_backward.amount_msat:
             self._cannot_send_backward = None
 
     @property
-    def cannot_send_forward(self):
-        return None if self.is_hint_invalid() else self._cannot_send_forward
+    def cannot_send_forward(self) -> Optional[int]:
+        la = self._cannot_send_forward
+        return la.get_valid_amount() if la else None
 
     @cannot_send_forward.setter
-    def cannot_send_forward(self, amount):
+    def cannot_send_forward(self, amount_msat: int) -> None:
         # we don't want to record less significant info
         # (not sendable amount is higher than known not sendable amount):
-        if self._cannot_send_forward and self._cannot_send_forward < amount:
+        known = self.cannot_send_forward
+        if known is not None and known < amount_msat:
             return
-        self._cannot_send_forward = amount
-        if self._can_send_forward and self._can_send_forward > self._cannot_send_forward:
+        self._cannot_send_forward = LiquidAmount.from_amount(amount_msat)
+        if self._can_send_forward and self._can_send_forward.amount_msat > self._cannot_send_forward.amount_msat:
             self._can_send_forward = None
         # if we can't send over the channel, we should be able to send in the
         # reverse direction
-        self.can_send_backward = amount
+        self.can_send_backward = amount_msat
 
     @property
-    def cannot_send_backward(self):
-        return None if self.is_hint_invalid() else self._cannot_send_backward
+    def cannot_send_backward(self) -> Optional[int]:
+        la = self._cannot_send_backward
+        return la.get_valid_amount() if la else None
 
     @cannot_send_backward.setter
-    def cannot_send_backward(self, amount):
-        if self._cannot_send_backward and self._cannot_send_backward < amount:
+    def cannot_send_backward(self, amount_msat: int) -> None:
+        known = self.cannot_send_backward
+        if known is not None and known < amount_msat:
             return
-        self._cannot_send_backward = amount
-        if self._can_send_backward and self._can_send_backward > self._cannot_send_backward:
+        self._cannot_send_backward = LiquidAmount.from_amount(amount_msat)
+        if self._can_send_backward and self._can_send_backward.amount_msat > self._cannot_send_backward.amount_msat:
             self._can_send_backward = None
-        self.can_send_forward = amount
+        self.can_send_forward = amount_msat
 
-    def can_send(self, is_forward_direction: bool):
+    def can_send(self, is_forward_direction: bool) -> Optional[int]:
         # make info invalid after some time?
         if is_forward_direction:
             return self.can_send_forward
         else:
             return self.can_send_backward
 
-    def cannot_send(self, is_forward_direction: bool):
+    def cannot_send(self, is_forward_direction: bool) -> Optional[int]:
         # make info invalid after some time?
         if is_forward_direction:
             return self.cannot_send_forward
         else:
             return self.cannot_send_backward
 
-    def update_can_send(self, is_forward_direction: bool, amount: int):
-        self.hint_timestamp = int(time.time())
+    def update_can_send(self, is_forward_direction: bool, *, amount_msat: int) -> None:
         if is_forward_direction:
-            self.can_send_forward = amount
+            self.can_send_forward = amount_msat
         else:
-            self.can_send_backward = amount
+            self.can_send_backward = amount_msat
 
-    def update_cannot_send(self, is_forward_direction: bool, amount: int):
-        self.hint_timestamp = int(time.time())
+    def update_cannot_send(self, is_forward_direction: bool, *, amount_msat: int) -> None:
         if is_forward_direction:
-            self.cannot_send_forward = amount
+            self.cannot_send_forward = amount_msat
         else:
-            self.cannot_send_backward = amount
+            self.cannot_send_backward = amount_msat
 
     def num_inflight_htlcs(self, is_forward_direction: bool) -> int:
         if is_forward_direction:
@@ -282,23 +287,27 @@ class LiquidityHint:
         else:
             return self._inflight_htlcs_backward
 
-    def add_htlc(self, is_forward_direction: bool):
+    def add_htlc(self, is_forward_direction: bool) -> None:
         if is_forward_direction:
             self._inflight_htlcs_forward += 1
         else:
             self._inflight_htlcs_backward += 1
 
-    def remove_htlc(self, is_forward_direction: bool):
+    def remove_htlc(self, is_forward_direction: bool) -> None:
         if is_forward_direction:
             self._inflight_htlcs_forward = max(0, self._inflight_htlcs_forward - 1)
         else:
-            self._inflight_htlcs_backward = max(0, self._inflight_htlcs_forward - 1)
+            self._inflight_htlcs_backward = max(0, self._inflight_htlcs_backward - 1)
+
+    def reset_amounts(self) -> None:
+        self._cannot_send_backward = None
+        self._cannot_send_forward = None
+        self._can_send_forward = None
+        self._can_send_backward = None
 
     def __repr__(self):
-        is_blacklisted = False if not self.blacklist_timestamp else int(time.time()) - self.blacklist_timestamp < BLACKLIST_DURATION
-        return f"forward: can send: {self._can_send_forward} msat, cannot send: {self._cannot_send_forward} msat, htlcs: {self._inflight_htlcs_forward}\n" \
-               f"backward: can send: {self._can_send_backward} msat, cannot send: {self._cannot_send_backward} msat, htlcs: {self._inflight_htlcs_backward}\n" \
-               f"blacklisted: {is_blacklisted}"
+        return f"forward: can send: {self._can_send_forward}, cannot send: {self._cannot_send_forward}, htlcs: {self._inflight_htlcs_forward}\n" \
+               f"backward: can send: {self._can_send_backward}, cannot send: {self._cannot_send_backward}, htlcs: {self._inflight_htlcs_backward}\n"
 
 
 class LiquidityHintMgr:
@@ -323,14 +332,14 @@ class LiquidityHintMgr:
         return hint
 
     @with_lock
-    def update_can_send(self, node_from: bytes, node_to: bytes, channel_id: ShortChannelID, amount: int):
+    def update_can_send(self, node_from: bytes, node_to: bytes, channel_id: ShortChannelID, *, amount_msat: int) -> None:
         hint = self.get_hint(channel_id)
-        hint.update_can_send(node_from < node_to, amount)
+        hint.update_can_send(node_from < node_to, amount_msat=amount_msat)
 
     @with_lock
-    def update_cannot_send(self, node_from: bytes, node_to: bytes, channel_id: ShortChannelID, amount: int):
+    def update_cannot_send(self, node_from: bytes, node_to: bytes, channel_id: ShortChannelID, *, amount_msat: int) -> None:
         hint = self.get_hint(channel_id)
-        hint.update_cannot_send(node_from < node_to, amount)
+        hint.update_cannot_send(node_from < node_to, amount_msat=amount_msat)
 
     @with_lock
     def add_htlc(self, node_from: bytes, node_to: bytes, channel_id: ShortChannelID):
@@ -342,7 +351,14 @@ class LiquidityHintMgr:
         hint = self.get_hint(channel_id)
         hint.remove_htlc(node_from < node_to)
 
-    def penalty(self, node_from: bytes, node_to: bytes, channel_id: ShortChannelID, amount: int) -> float:
+    def penalty(
+        self,
+        node_from: bytes,
+        node_to: bytes,
+        channel_id: ShortChannelID,
+        *,
+        amount_msat: int,
+    ) -> float:
         """Gives a penalty when sending from node1 to node2 over channel_id with an
         amount in units of millisatoshi.
 
@@ -363,7 +379,11 @@ class LiquidityHintMgr:
         was chosen such that the penalty will be able to compete with the regular
         base and relative fees.
         """
-        # we only evaluate hints here, so use dict get (to not create many hints with self.get_hint)
+        # note: self.lock is not taken for performance reasons, as we are called ~100k times per path-finding,
+        #       and just acquiring+releasing locks that many times is expensive(?).
+        #       (tho find_path_for_payment() could take LiquidityHintMgr.lock for the whole duration of the pathfinding)
+        #       We only read the hints, so this should mostly be fine. Except a concurrent update could still happen...
+        # note: we only evaluate hints here, so use dict get (to not create many hints with self.get_hint)
         hint = self._liquidity_hints.get(channel_id)
         if not hint:
             can_send, cannot_send, num_inflight_htlcs = None, None, 0
@@ -371,35 +391,31 @@ class LiquidityHintMgr:
             can_send = hint.can_send(node_from < node_to)
             cannot_send = hint.cannot_send(node_from < node_to)
             num_inflight_htlcs = hint.num_inflight_htlcs(node_from < node_to)
+        assert isinstance(num_inflight_htlcs, int), f"{num_inflight_htlcs=!r} should be an int"
+        assert num_inflight_htlcs >= 0, f"{num_inflight_htlcs=!r} should be non-negative"
 
-        if cannot_send is not None and amount >= cannot_send:
+        # above known liquidity interval: inf
+        if cannot_send is not None and amount_msat >= cannot_send:
             return inf
-        if can_send is not None and amount <= can_send:
+        # below known liquidity interval: free
+        if can_send is not None and amount_msat <= can_send:
             return 0
-        success_fee = fee_for_edge_msat(amount, DEFAULT_PENALTY_BASE_MSAT, DEFAULT_PENALTY_PROPORTIONAL_MILLIONTH)
-        inflight_htlc_fee = num_inflight_htlcs * success_fee
-        return success_fee + inflight_htlc_fee
-
-    @with_lock
-    def add_to_blacklist(self, channel_id: ShortChannelID):
-        hint = self.get_hint(channel_id)
-        now = int(time.time())
-        hint.blacklist_timestamp = now
-
-    @with_lock
-    def get_blacklist(self) -> Set[ShortChannelID]:
-        now = int(time.time())
-        return set(k for k, v in self._liquidity_hints.items() if now - v.blacklist_timestamp < BLACKLIST_DURATION)
-
-    @with_lock
-    def clear_blacklist(self):
-        for k, v in self._liquidity_hints.items():
-            v.blacklist_timestamp = 0
+        # inside known liquidity interval, or liquidity unknown
+        likely_cannotsend_factor = 0
+        if cannot_send is not None:
+            fcan_send = can_send or 0
+            # apply extra penalty if we are close to known interval upper bound
+            if amount_msat >= fcan_send + 0.8 * (cannot_send - fcan_send):
+                likely_cannotsend_factor = 2
+        success_fee = fee_for_edge_msat(amount_msat, DEFAULT_PENALTY_BASE_MSAT, DEFAULT_PENALTY_PROPORTIONAL_MILLIONTH)
+        return success_fee * (1 + num_inflight_htlcs + likely_cannotsend_factor)
 
     @with_lock
     def reset_liquidity_hints(self):
         for k, v in self._liquidity_hints.items():
-            v.hint_timestamp = 0
+            v.reset_amounts()
+            v._inflight_htlcs_forward = 0
+            v._inflight_htlcs_backward = 0
 
     def __repr__(self):
         string = "liquidity hints:\n"
@@ -415,27 +431,61 @@ class LNPathFinder(Logger):
         Logger.__init__(self)
         self.channel_db = channel_db
         self.liquidity_hints = LiquidityHintMgr()
+        self._edge_blacklist = dict()  # type: Dict[ShortChannelID, int]  # scid -> expiration
+        self._blacklist_lock = threading.Lock()
+
+    def _is_edge_blacklisted(self, short_channel_id: ShortChannelID, *, now: int) -> bool:
+        blacklist_expiration = self._edge_blacklist.get(short_channel_id)
+        if blacklist_expiration is None:
+            return False
+        if blacklist_expiration < now:
+            return False
+            # TODO rm expired entries from cache (note: perf vs thread-safety)
+        return True
+
+    def add_edge_to_blacklist(
+        self,
+        short_channel_id: ShortChannelID,
+        *,
+        now: int | None = None,
+        duration: int = 3600,  # seconds
+    ) -> None:
+        if now is None:
+            now = int(time.time())
+        with self._blacklist_lock:
+            blacklist_expiration = self._edge_blacklist.get(short_channel_id, 0)
+            self._edge_blacklist[short_channel_id] = max(blacklist_expiration, now + duration)
+
+    def clear_blacklist(self):
+        with self._blacklist_lock:
+            self._edge_blacklist = dict()
 
     def update_liquidity_hints(
             self,
             route: LNPaymentRoute,
             amount_msat: int,
-            failing_channel: ShortChannelID=None
+            failing_channel: ShortChannelID = None,
     ):
-        # go through the route and record successes until the failing channel is reached,
-        # for the failing channel, add a cannot_send liquidity hint
-        # note: actual routable amounts are slightly different than reported here
-        # as fees would need to be added
+        """We mark all channels along the route as able to forward the amount, until
+        the failing channel is reached. For the failing channel, add a cannot_send liquidity hint.
+        In the case of success (failing_channel=None), we still mark channels of the route
+        as being able to send the same amount in the future, as we assume to not know the capacity.
+
+        note: actual routable amounts are slightly different than reported here
+              as fees would need to be added.
+        """
         for r in route:
             if r.short_channel_id != failing_channel:
                 self.logger.info(f"report {r.short_channel_id} to be able to forward {amount_msat} msat")
-                self.liquidity_hints.update_can_send(r.start_node, r.end_node, r.short_channel_id, amount_msat)
+                self.liquidity_hints.update_can_send(r.start_node, r.end_node, r.short_channel_id, amount_msat=amount_msat)
             else:
                 self.logger.info(f"report {r.short_channel_id} to be unable to forward {amount_msat} msat")
-                self.liquidity_hints.update_cannot_send(r.start_node, r.end_node, r.short_channel_id, amount_msat)
+                self.liquidity_hints.update_cannot_send(r.start_node, r.end_node, r.short_channel_id, amount_msat=amount_msat)
                 break
+        else:
+            assert failing_channel is None
 
-    def update_inflight_htlcs(self, route: LNPaymentRoute, add_htlcs: bool):
+    def update_num_inflight_htlcs(self, route: LNPaymentRoute, *, add_htlcs: bool) -> None:
         self.logger.info(f"{'Adding' if add_htlcs else 'Removing'} inflight htlcs to graph (liquidity hints).")
         for r in route:
             if add_htlcs:
@@ -446,18 +496,22 @@ class LNPathFinder(Logger):
     def _edge_cost(
             self,
             *,
-            short_channel_id: bytes,
+            short_channel_id: ShortChannelID,
             start_node: bytes,
             end_node: bytes,
             payment_amt_msat: int,
             ignore_costs=False,
+            ignore_amount_constraints: bool = False,
             is_mine=False,
             my_channels: Dict[ShortChannelID, 'Channel'] = None,
             private_route_edges: Dict[ShortChannelID, RouteEdge] = None,
+            now: int,  # unix ts
     ) -> Tuple[float, int]:
         """Heuristic cost (distance metric) of going through a channel.
         Returns (heuristic_cost, fee_for_edge_msat).
         """
+        if self._is_edge_blacklisted(short_channel_id, now=now):
+            return float('inf'), 0
         if private_route_edges is None:
             private_route_edges = {}
         channel_info = self.channel_db.get_channel_info(
@@ -465,74 +519,90 @@ class LNPathFinder(Logger):
         if channel_info is None:
             return float('inf'), 0
         channel_policy = self.channel_db.get_policy_for_node(
-            short_channel_id, start_node, my_channels=my_channels, private_route_edges=private_route_edges)
+            short_channel_id, start_node, my_channels=my_channels, private_route_edges=private_route_edges, now=now)
         if channel_policy is None:
             return float('inf'), 0
         # channels that did not publish both policies often return temporary channel failure
         channel_policy_backwards = self.channel_db.get_policy_for_node(
-            short_channel_id, end_node, my_channels=my_channels, private_route_edges=private_route_edges)
+            short_channel_id, end_node, my_channels=my_channels, private_route_edges=private_route_edges, now=now)
         if (channel_policy_backwards is None
                 and not is_mine
                 and short_channel_id not in private_route_edges):
             return float('inf'), 0
         if channel_policy.is_disabled():
             return float('inf'), 0
-        if payment_amt_msat < channel_policy.htlc_minimum_msat:
-            return float('inf'), 0  # payment amount too little
-        if channel_info.capacity_sat is not None and \
-                payment_amt_msat // 1000 > channel_info.capacity_sat:
-            return float('inf'), 0  # payment amount too large
-        if channel_policy.htlc_maximum_msat is not None and \
-                payment_amt_msat > channel_policy.htlc_maximum_msat:
-            return float('inf'), 0  # payment amount too large
+        if not ignore_amount_constraints:
+            if payment_amt_msat < channel_policy.htlc_minimum_msat:
+                return float('inf'), 0  # payment amount too little
+            if channel_info.capacity_sat is not None and \
+                    payment_amt_msat // 1000 > channel_info.capacity_sat:
+                return float('inf'), 0  # payment amount too large
+            if channel_policy.htlc_maximum_msat is not None and \
+                    payment_amt_msat > channel_policy.htlc_maximum_msat:
+                return float('inf'), 0  # payment amount too large
         route_edge = private_route_edges.get(short_channel_id, None)
         if route_edge is None:
             node_info = self.channel_db.get_node_info_for_node_id(node_id=end_node)
+            if node_info:
+                # it's ok if we are missing the node_announcement (node_info) for this node,
+                # but if we have it, we enforce that they support var_onion_optin
+                node_features = LnFeatures(node_info.features)
+                if not node_features.supports(LnFeatures.VAR_ONION_OPT):  # note: this is kind of slow. could be cached.
+                    return float('inf'), 0
             route_edge = RouteEdge.from_channel_policy(
                 channel_policy=channel_policy,
                 short_channel_id=short_channel_id,
                 start_node=start_node,
                 end_node=end_node,
                 node_info=node_info)
-        if not route_edge.is_sane_to_use(payment_amt_msat):
-            return float('inf'), 0  # thanks but no thanks
+        # Cap cltv of any given edge at 2 weeks (the cost function would not work well for extreme cases)
+        if route_edge.cltv_delta > 14 * 960:
+            return float('inf'), 0
         # Distance metric notes:  # TODO constants are ad-hoc
         # ( somewhat based on https://github.com/lightningnetwork/lnd/pull/1358 )
         # - Edges have a base cost. (more edges -> less likely none will fail)
         # - The larger the payment amount, and the longer the CLTV,
         #   the more irritating it is if the HTLC gets stuck.
         # - Paying lower fees is better. :)
-        if ignore_costs:
+        if ignore_costs or ignore_amount_constraints:
             return DEFAULT_PENALTY_BASE_MSAT, 0
         fee_msat = route_edge.fee_for_edge(payment_amt_msat)
-        cltv_cost = route_edge.cltv_expiry_delta * payment_amt_msat * 15 / 1_000_000_000
+        cltv_cost = route_edge.cltv_delta * payment_amt_msat * 15 / 1_000_000_000
         # the liquidty penalty takes care we favor edges that should be able to forward
         # the payment and penalize edges that cannot
-        liquidity_penalty = self.liquidity_hints.penalty(start_node, end_node, short_channel_id, payment_amt_msat)
+        liquidity_penalty = self.liquidity_hints.penalty(start_node, end_node, short_channel_id, amount_msat=payment_amt_msat)
         overall_cost = fee_msat + cltv_cost + liquidity_penalty
         return overall_cost, fee_msat
 
     def get_shortest_path_hops(
             self,
             *,
-            nodeA: bytes,
+            nodeA: bytes, # nodeA is expected to be our node id if channels are passed in my_sending_channels
             nodeB: bytes,
-            invoice_amount_msat: int,
+            invoice_amount_msat: Optional[int],
             my_sending_channels: Dict[ShortChannelID, 'Channel'] = None,
             private_route_edges: Dict[ShortChannelID, RouteEdge] = None,
+            node_filter: Optional[Callable[[bytes, Optional[NodeInfo]], bool]] = None,
     ) -> Dict[bytes, PathEdge]:
         # note: we don't lock self.channel_db, so while the path finding runs,
         #       the underlying graph could potentially change... (not good but maybe ~OK?)
 
+        # if destination is filtered, there is no route
+        if node_filter:
+            node_info = self.channel_db.get_node_info_for_node_id(nodeB)
+            if not node_filter(nodeB, node_info):
+                return {}
+
         # run Dijkstra
         # The search is run in the REVERSE direction, from nodeB to nodeA,
         # to properly calculate compound routing fees.
-        blacklist = self.liquidity_hints.get_blacklist()
+        ignore_amount_constraints = invoice_amount_msat is None  # e.g. onion messages
         distance_from_start = defaultdict(lambda: float('inf'))
         distance_from_start[nodeB] = 0
         previous_hops = {}  # type: Dict[bytes, PathEdge]
         nodes_to_explore = queue.PriorityQueue()
-        nodes_to_explore.put((0, invoice_amount_msat, nodeB))  # order of fields (in tuple) matters!
+        nodes_to_explore.put((0, invoice_amount_msat or 0, nodeB))  # order of fields (in tuple) matters!
+        now = int(time.time())
 
         # main loop of search
         while nodes_to_explore.qsize() > 0:
@@ -559,27 +629,39 @@ class LNPathFinder(Logger):
 
             for edge_channel_id in channels_for_endnode:
                 assert isinstance(edge_channel_id, bytes)
-                if blacklist and edge_channel_id in blacklist:
+                if self._is_edge_blacklisted(edge_channel_id, now=now):
                     continue
                 channel_info = self.channel_db.get_channel_info(
                     edge_channel_id, my_channels=my_sending_channels, private_route_edges=private_route_edges)
                 if channel_info is None:
                     continue
                 edge_startnode = channel_info.node2_id if channel_info.node1_id == edge_endnode else channel_info.node1_id
+                if node_filter:
+                    node_info = self.channel_db.get_node_info_for_node_id(edge_startnode)
+                    if not node_filter(edge_startnode, node_info):
+                        continue
                 is_mine = edge_channel_id in my_sending_channels
-                if is_mine:
-                    if edge_startnode == nodeA:  # payment outgoing, on our channel
-                        if not my_sending_channels[edge_channel_id].can_pay(amount_msat, check_frozen=True):
-                            continue
+                if edge_startnode == nodeA and my_sending_channels:  # payment outgoing, on our channel
+                    if edge_channel_id not in my_sending_channels:
+                        continue
+                    if not ignore_amount_constraints \
+                            and not my_sending_channels[edge_channel_id].can_pay(amount_msat, check_frozen=True):
+                        # note: in case of MPP, we might be constructing multiple routes for different HTLCs around the same time,
+                        #       and only a tiny bit later will the HTLCs get added to the channels. If another HTLC has not been
+                        #       added yet but we already selected to use the same channel for it, this "can_pay()" can return a false positive.
+                        continue
                 edge_cost, fee_for_edge_msat = self._edge_cost(
                     short_channel_id=edge_channel_id,
                     start_node=edge_startnode,
                     end_node=edge_endnode,
                     payment_amt_msat=amount_msat,
                     ignore_costs=(edge_startnode == nodeA),
+                    ignore_amount_constraints=ignore_amount_constraints,
                     is_mine=is_mine,
                     my_channels=my_sending_channels,
-                    private_route_edges=private_route_edges)
+                    private_route_edges=private_route_edges,
+                    now=now,
+                )
                 alt_dist_to_neighbour = distance_from_start[edge_endnode] + edge_cost
                 if alt_dist_to_neighbour < distance_from_start[edge_startnode]:
                     distance_from_start[edge_startnode] = alt_dist_to_neighbour
@@ -601,14 +683,15 @@ class LNPathFinder(Logger):
             *,
             nodeA: bytes,
             nodeB: bytes,
-            invoice_amount_msat: int,
+            invoice_amount_msat: Optional[int],
             my_sending_channels: Dict[ShortChannelID, 'Channel'] = None,
             private_route_edges: Dict[ShortChannelID, RouteEdge] = None,
+            node_filter: Optional[Callable[[bytes, Optional[NodeInfo]], bool]] = None
     ) -> Optional[LNPaymentPath]:
         """Return a path from nodeA to nodeB."""
         assert type(nodeA) is bytes
         assert type(nodeB) is bytes
-        assert type(invoice_amount_msat) is int
+        assert type(invoice_amount_msat) is int or invoice_amount_msat is None
         if my_sending_channels is None:
             my_sending_channels = {}
 
@@ -617,7 +700,8 @@ class LNPathFinder(Logger):
             nodeB=nodeB,
             invoice_amount_msat=invoice_amount_msat,
             my_sending_channels=my_sending_channels,
-            private_route_edges=private_route_edges)
+            private_route_edges=private_route_edges,
+            node_filter=node_filter)
 
         if nodeA not in previous_hops:
             return None  # no path found
@@ -631,6 +715,28 @@ class LNPathFinder(Logger):
             path += [edge]
             edge_startnode = edge.node_id
         return path
+
+    def find_path_for_onion_message(
+            self,
+            *,
+            nodeA: bytes,
+            nodeB: bytes,
+            my_sending_channels: Dict[ShortChannelID, 'Channel'] = None,
+            private_route_edges: Dict[ShortChannelID, RouteEdge] = None,
+    ) -> Optional[LNPaymentPath]:
+        from .onion_message import is_onion_message_node
+        def _node_filter(edge_startnode, node_info):
+            if edge_startnode == nodeA:
+                return True  # assume the sending node does support onion messages
+            return is_onion_message_node(edge_startnode, node_info)
+        return self.find_path_for_payment(
+            nodeA=nodeA,
+            nodeB=nodeB,
+            my_sending_channels=my_sending_channels,
+            private_route_edges=private_route_edges,
+            node_filter=_node_filter,
+            invoice_amount_msat=None,
+        )
 
     def create_route_from_path(
             self,
@@ -677,7 +783,7 @@ class LNPathFinder(Logger):
             nodeA: bytes,
             nodeB: bytes,
             invoice_amount_msat: int,
-            path = None,
+            path: Optional[Sequence[PathEdge]] = None,
             my_sending_channels: Dict[ShortChannelID, 'Channel'] = None,
             private_route_edges: Dict[ShortChannelID, RouteEdge] = None,
     ) -> Optional[LNPaymentRoute]:

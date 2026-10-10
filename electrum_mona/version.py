@@ -1,7 +1,7 @@
-ELECTRUM_VERSION = '4.2.1'     # version of the client package
-APK_VERSION = '4.2.1.0'        # read by buildozer.spec
+ELECTRUM_VERSION = '4.8.2'       # version of the client package
 
-PROTOCOL_VERSION = '1.4'     # protocol version requested
+PROTOCOL_VERSION_MIN = '1.4'     # electrum protocol
+PROTOCOL_VERSION_MAX = '1.6'
 
 # The hash of the mnemonic seed must begin with this
 SEED_PREFIX        = '01'      # Standard wallet
@@ -19,4 +19,4 @@ def seed_prefix(seed_type):
         return SEED_PREFIX_2FA
     elif seed_type == '2fa_segwit':
         return SEED_PREFIX_2FA_SW
-    raise Exception(f"unknown seed_type: {seed_type}")
+    raise Exception(f"unknown seed_type: {seed_type!r}")

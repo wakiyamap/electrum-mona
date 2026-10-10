@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
-# Electron Cash - lightweight Bitcoin client
 # Copyright (C) 2019 Axel Gembe <derago@gmail.com>
+# Copyright (c) 2024 The Electrum developers
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation files
@@ -23,69 +23,55 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from typing import List
+from typing import Optional
 
-from PyQt5.QtMultimedia import (QVideoFrame, QAbstractVideoBuffer, QAbstractVideoSurface,
-                                QVideoSurfaceFormat)
-from PyQt5.QtGui import QImage
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt6.QtMultimedia import QVideoFrame, QVideoSink
+from PyQt6.QtGui import QImage
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
-from electrum_mona.i18n import _
 from electrum_mona.logging import get_logger
 
 
 _logger = get_logger(__name__)
 
 
-class QrReaderVideoSurface(QAbstractVideoSurface):
+class QrReaderVideoSurface(QVideoSink):
     """
-    Receives QVideoFrames from QCamera, converts them into a QImage, flips the X and Y axis if
-    necessary and sends them to listeners via the frame_available event.
+    Receives QVideoFrames from QCamera, converts the newest one into a QImage and
+    sends it to listeners via the frame_available signal.
     """
+
+    frame_available = pyqtSignal(QImage)
 
     def __init__(self, parent: QObject = None):
         super().__init__(parent)
+        self._pending_frame: Optional[QVideoFrame] = None
+        self._process_timer = QTimer(self)
+        self._process_timer.setSingleShot(True)
+        self._process_timer.setInterval(0)
+        self._process_timer.timeout.connect(self._process_pending_frame)
+        self.videoFrameChanged.connect(self._on_new_frame)
 
-    def present(self, frame: QVideoFrame) -> bool:
+    def _on_new_frame(self, frame: QVideoFrame) -> None:
         if not frame.isValid():
-            return False
+            return
+        # only keep the newest frame
+        self._pending_frame = QVideoFrame(frame)  # keep our own reference (the received frame is owned by Qt)
+        if not self._process_timer.isActive():
+            self._process_timer.start()
 
-        image_format = QVideoFrame.imageFormatFromPixelFormat(frame.pixelFormat())
-        if image_format == QVideoFrame.Format_Invalid:
-            _logger.info(_('QR code scanner for video frame with invalid pixel format'))
-            return False
-
-        if not frame.map(QAbstractVideoBuffer.ReadOnly):
-            _logger.info(_('QR code scanner failed to map video frame'))
-            return False
-
+    def _process_pending_frame(self) -> None:
+        frame, self._pending_frame = self._pending_frame, None
+        if frame is None:
+            return
+        if not frame.map(QVideoFrame.MapMode.ReadOnly):
+            _logger.warning(f"failed to map video frame. pixel format: {frame.pixelFormat()}", only_once=True)
+            return
         try:
-            img = QImage(int(frame.bits()), frame.width(), frame.height(), image_format)
-
-            # Check whether we need to flip the image on any axis
-            surface_format = self.surfaceFormat()
-            flip_x = surface_format.isMirrored()
-            flip_y = surface_format.scanLineDirection() == QVideoSurfaceFormat.BottomToTop
-
-            # Mirror the image if needed
-            if flip_x or flip_y:
-                img = img.mirrored(flip_x, flip_y)
-
-            # Create a copy of the image so the original frame data can be freed
-            img = img.copy()
+            img = frame.toImage()
         finally:
             frame.unmap()
-
+        if img.isNull():
+            _logger.warning(f"failed to convert video frame to image. pixel format: {frame.pixelFormat()}", only_once=True)
+            return
         self.frame_available.emit(img)
-
-        return True
-
-    def supportedPixelFormats(self, handle_type: QAbstractVideoBuffer.HandleType) -> List[QVideoFrame.PixelFormat]:
-        if handle_type == QAbstractVideoBuffer.NoHandle:
-            # We support all pixel formats that can be understood by QImage directly
-            return [QVideoFrame.Format_ARGB32, QVideoFrame.Format_ARGB32_Premultiplied,
-                QVideoFrame.Format_RGB32, QVideoFrame.Format_RGB24, QVideoFrame.Format_RGB565,
-                QVideoFrame.Format_RGB555, QVideoFrame.Format_ARGB8565_Premultiplied]
-        return []
-
-    frame_available = pyqtSignal(QImage)

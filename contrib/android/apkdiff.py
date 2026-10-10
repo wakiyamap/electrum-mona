@@ -4,6 +4,14 @@
 import sys
 from zipfile import ZipFile
 
+
+# FIXME it is possible to hide data in the apk signing block - and then the application
+#       can introspect itself at runtime and access that, even execute it as code... :/
+#       see https://source.android.com/docs/security/features/apksigning/v2#apk-signing-block
+#           https://android.izzysoft.de/articles/named/iod-scan-apkchecks
+#           https://github.com/obfusk/sigblock-code-poc
+#       I think if the app did this kind of introspection, that should be caught by code review,
+#       but still, note that with this current diff script it is possible to smuggle data in the apk.
 class ApkDiff:
     IGNORE_FILES = ["META-INF/MANIFEST.MF", "META-INF/CERT.RSA", "META-INF/CERT.SF"]
 
@@ -11,7 +19,7 @@ class ApkDiff:
         sourceZip      = ZipFile(sourceApk, 'r')
         destinationZip = ZipFile(destinationApk, 'r')
 
-        if self.compareManifests(sourceZip, destinationZip) and self.compareEntries(sourceZip, destinationZip) == True:
+        if self.compareManifests(sourceZip, destinationZip) and self.compareEntries(sourceZip, destinationZip):
             print("APKs match!")
             return True
         else:
@@ -50,7 +58,7 @@ class ApkDiff:
                     sourceEntry      = sourceZip.open(sourceEntryInfo, 'r')
                     destinationEntry = destinationZip.open(destinationEntryInfo, 'r')
 
-                    if self.compareFiles(sourceEntry, destinationEntry) != True:
+                    if not self.compareFiles(sourceEntry, destinationEntry):
                         print("APK entry %s does not match %s!" % (sourceEntryInfo.filename, destinationEntryInfo.filename))
                         return False
 

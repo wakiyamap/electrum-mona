@@ -30,13 +30,14 @@
 #  http://backreference.org/2010/11/17/dnssec-verification-with-dig/
 #  https://github.com/rthalley/dnspython/blob/master/tests/test_dnssec.py
 
+import logging
 
 import dns
 import dns.name
-import dns.query
+import dns.asyncquery
 import dns.dnssec
 import dns.message
-import dns.resolver
+import dns.asyncresolver
 import dns.rdatatype
 import dns.rdtypes.ANY.NS
 import dns.rdtypes.ANY.CNAME
@@ -53,6 +54,7 @@ import dns.rdtypes.IN.A
 import dns.rdtypes.IN.AAAA
 
 from .logging import get_logger
+from typing import Tuple
 
 
 _logger = get_logger(__name__)
@@ -67,9 +69,9 @@ trust_anchors = [
 ]
 
 
-def _check_query(ns, sub, _type, keys):
+async def _check_query(ns, sub, _type, keys) -> dns.rrset.RRset:
     q = dns.message.make_query(sub, _type, want_dnssec=True)
-    response = dns.query.tcp(q, ns, timeout=5)
+    response = await dns.asyncquery.tcp(q, ns, timeout=5)
     assert response.rcode() == 0, 'No answer'
     answer = response.answer
     assert len(answer) != 0, ('No DNS record found', sub, _type)
@@ -86,13 +88,13 @@ def _check_query(ns, sub, _type, keys):
     return rrset
 
 
-def _get_and_validate(ns, url, _type):
+async def _get_and_validate(ns, url, _type) -> dns.rrset.RRset:
     # get trusted root key
     root_rrset = None
     for dnskey_rr in trust_anchors:
         try:
             # Check if there is a valid signature for the root dnskey
-            root_rrset = _check_query(ns, '', dns.rdatatype.DNSKEY, {dns.name.root: dnskey_rr})
+            root_rrset = await _check_query(ns, '', dns.rdatatype.DNSKEY, {dns.name.root: dnskey_rr})
             break
         except dns.dnssec.ValidationFailure:
             # It's OK as long as one key validates
@@ -107,16 +109,16 @@ def _get_and_validate(ns, url, _type):
         name = dns.name.from_text(sub)
         # If server is authoritative, don't fetch DNSKEY
         query = dns.message.make_query(sub, dns.rdatatype.NS)
-        response = dns.query.udp(query, ns, 3)
+        response = await dns.asyncquery.udp(query, ns, 3)
         assert response.rcode() == dns.rcode.NOERROR, "query error"
         rrset = response.authority[0] if len(response.authority) > 0 else response.answer[0]
         rr = rrset[0]
         if rr.rdtype == dns.rdatatype.SOA:
             continue
         # get DNSKEY (self-signed)
-        rrset = _check_query(ns, sub, dns.rdatatype.DNSKEY, None)
+        rrset = await _check_query(ns, sub, dns.rdatatype.DNSKEY, None)
         # get DS (signed by parent)
-        ds_rrset = _check_query(ns, sub, dns.rdatatype.DS, keys)
+        ds_rrset = await _check_query(ns, sub, dns.rdatatype.DS, keys)
         # verify that a signed DS validates DNSKEY
         for ds in ds_rrset:
             for dnskey in rrset:
@@ -132,19 +134,27 @@ def _get_and_validate(ns, url, _type):
         # set key for next iteration
         keys = {name: rrset}
     # get TXT record (signed by zone)
-    rrset = _check_query(ns, url, _type, keys)
+    rrset = await _check_query(ns, url, _type, keys)
     return rrset
 
 
-def query(url, rtype):
+async def query(url: str, rtype: dns.rdatatype.RdataType) -> Tuple[dns.rrset.RRset, bool]:
+    """Try to do DNS resolution, including DNSSEC.
+    'validated' shows whether the DNSSEC checks passed. DNS is completely INSECURE without DNSSEC,
+    so the caller must carefully consider whether the response can be used for anything if validated=False.
+    """
+    # FIXME this method is not using the network proxy. (although the proxy might not support UDP?)
+    #       if the proxy is a Tor SOCKS proxy, we could use Tor's "RESOLVE" extension command.
+    #         (see https://spec.torproject.org/socks-extensions.html)
     # 8.8.8.8 is Google's public DNS server
     nameservers = ['8.8.8.8']
     ns = nameservers[0]
     try:
-        out = _get_and_validate(ns, url, rtype)
+        out = await _get_and_validate(ns, url, rtype)
         validated = True
     except Exception as e:
-        _logger.info(f"DNSSEC error: {repr(e)}")
-        out = dns.resolver.resolve(url, rtype)
+        log_level = logging.WARNING if isinstance(e, ImportError) else logging.INFO
+        _logger.log(log_level, f"DNSSEC error: {repr(e)}")
+        out = await dns.asyncresolver.resolve(url, rtype)
         validated = False
     return out, validated

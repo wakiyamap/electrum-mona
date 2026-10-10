@@ -5,20 +5,27 @@ import datetime
 import locale
 from decimal import Decimal
 import getpass
-import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-import electrum_mona
+# 3rd-party dependency:
+try:
+    import pyperclip
+except ImportError:  # only use vendored lib as fallback, to allow Linux distros to bring their own
+    from electrum_mona._vendor import pyperclip
+
 from electrum_mona.gui import BaseElectrumGui
-from electrum_mona import util
-from electrum_mona.util import format_satoshis
-from electrum_mona.bitcoin import is_address, COIN
+from electrum_mona.bip21 import parse_bip21_URI
+from electrum_mona.util import format_time
+from electrum_mona.util import EventListener, event_listener
+from electrum_mona.bitcoin import is_address, address_to_script
 from electrum_mona.transaction import PartialTxOutput
-from electrum_mona.wallet import Wallet
+from electrum_mona.wallet import Wallet, Abstract_Wallet
 from electrum_mona.wallet_db import WalletDB
 from electrum_mona.storage import WalletStorage
-from electrum_mona.network import NetworkParameters, TxBroadcastError, BestEffortRequestFailed
+from electrum_mona.network import NetworkParameters, TxBroadcastError, BestEffortRequestFailed, ProxySettings
 from electrum_mona.interface import ServerAddr
+from electrum_mona.invoices import Invoice
+from electrum_mona.fee_policy import FeePolicy
 
 if TYPE_CHECKING:
     from electrum_mona.daemon import Daemon
@@ -29,21 +36,41 @@ if TYPE_CHECKING:
 _ = lambda x:x  # i18n
 
 
-class ElectrumGui(BaseElectrumGui):
+# ascii key codes
+KEY_BACKSPACE = 8
+KEY_ESC = 27
+KEY_DELETE = 127
+
+
+def parse_bip21(text):
+    try:
+        return parse_bip21_URI(text)
+    except Exception:
+        return
+
+
+def parse_bolt11(text):
+    from electrum_mona.bolt11 import decode_bolt11_invoice
+    try:
+        return decode_bolt11_invoice(text)
+    except Exception:
+        return
+
+
+class ElectrumGui(BaseElectrumGui, EventListener):
 
     def __init__(self, *, config: 'SimpleConfig', daemon: 'Daemon', plugins: 'Plugins'):
         BaseElectrumGui.__init__(self, config=config, daemon=daemon, plugins=plugins)
         self.network = daemon.network
         storage = WalletStorage(config.get_wallet_path())
+        password = None
         if not storage.file_exists():
             print("Wallet not found. try 'electrum-mona create'")
             exit()
         if storage.is_encrypted():
             password = getpass.getpass('Password:', stream=None)
-            storage.decrypt(password)
-        db = WalletDB(storage.read(), manual_upgrades=False)
-        self.wallet = Wallet(db, storage, config=config)
-        self.wallet.start_network(self.network)
+        del storage
+        self.wallet = self.daemon.load_wallet(config.get_wallet_path(), password)
         self.contacts = self.wallet.contacts
 
         locale.setlocale(locale.LC_ALL, '')
@@ -57,12 +84,14 @@ class ElectrumGui(BaseElectrumGui):
         curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)
         curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_CYAN)
         curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_WHITE)
-        self.stdscr.keypad(1)
+        curses.halfdelay(1)
+        self.stdscr.keypad(True)
         self.stdscr.border(0)
         self.maxy, self.maxx = self.stdscr.getmaxyx()
         self.set_cursor(0)
         self.w = curses.newwin(10, 50, 5, 5)
 
+        self.lightning_invoice = None
         self.tab = 0
         self.pos = 0
         self.popup_pos = 0
@@ -70,15 +99,29 @@ class ElectrumGui(BaseElectrumGui):
         self.str_recipient = ""
         self.str_description = ""
         self.str_amount = ""
-        self.str_fee = ""
         self.history = None
         self.txid = []
+        self.str_recv_description = ""
+        self.str_recv_amount = ""
+        self.str_recv_expiry = ""
+        self.channel_ids = []
+        self.requests = []
 
-        util.register_callback(self.update, ['wallet_updated', 'network_updated'])
-
-        self.tab_names = [_("History"), _("Send"), _("Receive"), _("Addresses"), _("Contacts"), _("Banner")]
+        self.register_callbacks()
+        self.tab_names = [_("History"), _("Send"), _("Receive"), _("Addresses"), _("Coins"), _("Channels"), _("Contacts"), _("Banner")]
         self.num_tabs = len(self.tab_names)
+        self.need_update = False
 
+    def stop(self):
+        self.tab = -1
+
+    @event_listener
+    def on_event_wallet_updated(self, wallet):
+        self.need_update = True
+
+    @event_listener
+    def on_event_network_updated(self):
+        self.need_update = True
 
     def set_cursor(self, x):
         try:
@@ -92,174 +135,335 @@ class ElectrumGui(BaseElectrumGui):
     def verify_seed(self):
         pass
 
-    def get_string(self, y, x):
+    def get_string(self, y, x) -> str:
         self.set_cursor(1)
         curses.echo()
         self.stdscr.addstr(y, x, " "*20, curses.A_REVERSE)
-        s = self.stdscr.getstr(y,x)
+        s = self.stdscr.getstr(y,x).decode()
         curses.noecho()
         self.set_cursor(0)
         return s
 
-    def update(self, event, *args):
+    def update(self):
         self.update_history()
         if self.tab == 0:
             self.print_history()
         self.refresh()
+        self.need_update = False
+
+    def print_button(self, x, y, text, pos):
+        self.stdscr.addstr(x, y, text, curses.A_REVERSE if self.pos%self.max_pos==pos else curses.color_pair(2))
+
+    def print_edit_line(self, y, x, label, text, index, size):
+        text += " "*(size - len(text))
+        self.stdscr.addstr(y, x, label)
+        self.stdscr.addstr(y, x + 13, text, curses.A_REVERSE if self.pos%self.max_pos==index else curses.color_pair(1))
 
     def print_history(self):
-
-        width = [20, 40, 14, 14]
-        delta = (self.maxx - sum(width) - 4)/3
-        format_str = "%"+"%d"%width[0]+"s"+"%"+"%d"%(width[1]+delta)+"s"+"%"+"%d"%(width[2]+delta)+"s"+"%"+"%d"%(width[3]+delta)+"s"
-
+        x = 2
+        self.history_format_str = self.format_column_width(x, [-20, '*', 15, 15])
         if self.history is None:
             self.update_history()
-
-        self.print_list(self.history[::-1], format_str%(_("Date"), _("Description"), _("Amount"), _("Balance")))
+        self.print_list(2, x, self.history[::-1], headers=self.history_format_str%(_("Date"), _("Description"), _("Amount"), _("Balance")))
 
     def update_history(self):
         width = [20, 40, 14, 14]
         delta = (self.maxx - sum(width) - 4)/3
-        format_str = "%"+"%d"%width[0]+"s"+"%"+"%d"%(width[1]+delta)+"s"+"%"+"%d"%(width[2]+delta)+"s"+"%"+"%d"%(width[3]+delta)+"s"
-
-        b = 0
+        domain = self.wallet.get_addresses()
         self.history = []
         self.txid = []
-        for hist_item in self.wallet.get_history():
-            if hist_item.tx_mined_status.conf:
-                timestamp = hist_item.tx_mined_status.timestamp
-                try:
-                    time_str = datetime.datetime.fromtimestamp(timestamp).isoformat(' ')[:-3]
-                except Exception:
-                    time_str = "------"
+        balance_sat = 0
+        for item in self.wallet.get_full_history().values():
+            amount_sat = item['value'].value
+            balance_sat += amount_sat
+            if item.get('lightning'):
+                timestamp = item['timestamp']
+                label = self.wallet.get_label_for_rhash(item['payment_hash'])
+                self.txid.insert(0, item['payment_hash'])
+            else:
+                conf = item['confirmations']
+                timestamp = item['timestamp'] if conf > 0 else 0
+                label = self.wallet.get_label_for_txid(item['txid'])
+                self.txid.insert(0, item['txid'])
+            if timestamp:
+                time_str = datetime.datetime.fromtimestamp(timestamp).isoformat(' ')[:-3]
             else:
                 time_str = 'unconfirmed'
 
-            label = self.wallet.get_label_for_txid(hist_item.txid)
-            self.txid.insert(0, hist_item.txid)
             if len(label) > 40:
                 label = label[0:37] + '...'
-            self.history.append(format_str % (time_str, label, format_satoshis(hist_item.delta, whitespaces=True),
-                                              format_satoshis(hist_item.balance, whitespaces=True)))
+            self.history.append(self.history_format_str % (
+                time_str, label,
+                self.config.format_amount(amount_sat, whitespaces=True),
+                self.config.format_amount(balance_sat, whitespaces=True)))
 
+    def print_clipboard(self):
+        return
+        c = pyperclip.paste()
+        if c:
+            if len(c) > 20:
+                c = c[0:20] + '...'
+            self.stdscr.addstr(self.maxy -1, self.maxx // 3, ' ' + _('Clipboard') + ': ' + c + ' ')
 
     def print_balance(self):
         if not self.network:
             msg = _("Offline")
         elif self.network.is_connected():
-            if not self.wallet.up_to_date:
+            if not self.wallet.is_up_to_date():
                 msg = _("Synchronizing...")
             else:
-                c, u, x =  self.wallet.get_balance()
-                msg = _("Balance")+": %f  "%(Decimal(c) / COIN)
-                if u:
-                    msg += "  [%f unconfirmed]"%(Decimal(u) / COIN)
-                if x:
-                    msg += "  [%f unmatured]"%(Decimal(x) / COIN)
+                balance = self.wallet.get_balances_for_piechart().total()
+                msg = _("Balance") + ': ' + self.config.format_amount_and_units(balance)
         else:
             msg = _("Not connected")
-
+        msg = ' ' + msg + ' '
         self.stdscr.addstr(self.maxy -1, 3, msg)
-
         for i in range(self.num_tabs):
-            self.stdscr.addstr(0, 2 + 2*i + len(''.join(self.tab_names[0:i])), ' '+self.tab_names[i]+' ', curses.A_BOLD if self.tab == i else 0)
+            self.stdscr.addstr(0, 2 + 2*i + len(''.join(self.tab_names[0:i])), ' '+self.tab_names[i]+' ', curses.A_REVERSE if self.tab == i else 0)
+        self.stdscr.addstr(self.maxy -1, self.maxx-30, ' ' + ' '.join([_("Settings"), _("Network"), _("Quit")]) + ' ')
 
-        self.stdscr.addstr(self.maxy -1, self.maxx-30, ' '.join([_("Settings"), _("Network"), _("Quit")]))
+    def print_receive_tab(self):
+        self.stdscr.clear()
+        self.buttons = {}
+        self.max_pos = 6 + len(list(self.wallet.get_unpaid_requests()))
+        self.index = 0
+        self.add_edit_line(3, 2, _("Description"), self.str_recv_description, 40)
+        self.add_edit_line(5, 2, _("Amount"), self.str_recv_amount, 15)
+        self.stdscr.addstr(5, 31, self.config.get_base_unit())
+        self.add_edit_line(7, 2, _("Expiry"), self.str_recv_expiry, 15)
+        self.add_button(9, 15, _("[Clear]"), self.do_clear_request)
+        self.add_button(9, 25, _("[Onchain]"), lambda: self.do_create_request(lightning=False))
+        self.add_button(9, 35, _("[Lightning]"), lambda: self.do_create_request(lightning=True))
+        self.print_requests_list(13, 2, offset_pos=6)
+        return
 
-    def print_receive(self):
-        addr = self.wallet.get_receiving_address()
-        self.stdscr.addstr(2, 1, "Address: "+addr)
-        self.print_qr(addr)
+    def run_receive_tab(self, c):
+        if self.pos == 0:
+            self.str_recv_description = self.edit_str(self.str_recv_description, c)
+        elif self.pos == 1:
+            self.str_recv_amount = self.edit_str(self.str_recv_amount, c)
+        elif self.pos in self.buttons and c == ord("\n"):
+            self.buttons[self.pos]()
+        elif self.pos >= 6 and c == ord("\n"):
+            key = self.requests[self.pos - 6]
+            self.show_request(key)
+
+    def question(self, msg):
+        out = self.run_popup(msg, ["No", "Yes"]).get('button')
+        return out == "Yes"
+
+    def show_invoice_menu(self):
+        key = self.invoices[self.pos - 7]
+        invoice = self.wallet.get_invoice(key)
+        out = self.run_popup('Invoice', ["Pay", "Delete"]).get('button')
+        if out == "Pay":
+            self.do_pay_invoice(invoice)
+        elif out == "Delete":
+            self.wallet.delete_invoice(key)
+            self.max_pos -= 1
+
+    def format_column_width(self, offset, width):
+        delta = self.maxx -2 -offset - sum([abs(x) for x in width if x != '*'])
+        fmt = ''
+        for w in width:
+            if w == '*':
+                fmt += "%-" + "%d"%delta + "s"
+            else:
+                fmt += "%" + "%d"%w + "s"
+        return fmt
+
+    def print_invoices_list(self, y, x, offset_pos):
+        messages = []
+        invoices = []
+        fmt = self.format_column_width(x, [-20, '*', 15, 25])
+        headers = fmt % ("Date", "Description", "Amount", "Status")
+        for req in self.wallet.get_unpaid_invoices():
+            key = req.get_id()
+            status = self.wallet.get_invoice_status(req)
+            status_str = req.get_status_str(status)
+            timestamp = req.get_time()
+            date = format_time(timestamp)
+            amount = req.get_amount_sat()
+            message = req.get_message()
+            amount_str = self.config.format_amount(amount) if amount else ""
+            labels = []
+            messages.append(fmt % (date, message, amount_str, status_str))
+            invoices.append(key)
+        self.invoices = invoices
+        self.print_list(y, x, messages, headers=headers, offset_pos=offset_pos)
+
+    def print_requests_list(self, y, x, offset_pos):
+        messages = []
+        requests = []
+        fmt = self.format_column_width(x, [-20, '*', 15, 25])
+        headers = fmt % ("Date", "Description", "Amount", "Status")
+        for req in self.wallet.get_unpaid_requests():
+            key = req.get_id()
+            status = self.wallet.get_invoice_status(req)
+            status_str = req.get_status_str(status)
+            timestamp = req.get_time()
+            date = format_time(timestamp)
+            amount = req.get_amount_sat()
+            message = req.get_message()
+            amount_str = self.config.format_amount(amount) if amount else ""
+            labels = []
+            messages.append(fmt % (date, message, amount_str, status_str))
+            requests.append(key)
+        self.requests = requests
+        self.print_list(y, x, messages, headers=headers, offset_pos=offset_pos)
 
     def print_contacts(self):
-        messages = map(lambda x: "%20s   %45s "%(x[0], x[1][1]), self.contacts.items())
-        self.print_list(messages, "%19s  %15s "%("Key", "Value"))
+        messages = list(map(lambda x: "%20s   %45s "%(x[0], x[1][1]), self.contacts.items()))
+        self.print_list(2, 1, messages, "%19s  %15s "%("Key", "Value"))
 
     def print_addresses(self):
-        fmt = "%-35s  %-30s"
-        messages = map(lambda addr: fmt % (addr, self.wallet.get_label(addr)), self.wallet.get_addresses())
-        self.print_list(messages,   fmt % ("Address", "Label"))
+        x = 2
+        fmt = self.format_column_width(x, [-50, '*', 15])
+        messages = [ fmt % (
+            addr,
+            self.wallet.get_label_for_address(addr),
+            self.config.format_amount(sum(self.wallet.get_addr_balance(addr)), whitespaces=True)
+        ) for addr in self.wallet.get_addresses() ]
+        self.print_list(2, x, messages, fmt % ("Address", "Description", "Balance"))
 
-    def print_edit_line(self, y, label, text, index, size):
-        text += " "*(size - len(text))
-        self.stdscr.addstr(y, 2, label)
-        self.stdscr.addstr(y, 15, text, curses.A_REVERSE if self.pos%6==index else curses.color_pair(1))
+    def print_utxos(self):
+        x = 2
+        fmt = self.format_column_width(x, [-70, '*', 15])
+        utxos = self.wallet.get_utxos()
+        messages = [ fmt % (
+            utxo.prevout.to_str(),
+            self.wallet.get_label_for_txid(utxo.prevout.txid.hex()),
+            self.config.format_amount(utxo.value_sats(), whitespaces=True)
+        ) for utxo in utxos]
+        self.print_list(2, x, sorted(messages), fmt % ("Outpoint", "Description", "Balance"))
+
+    def print_channels(self):
+        if not self.wallet.lnworker:
+            return
+        fmt = "%-35s  %-10s  %-30s"
+        channels = self.wallet.lnworker.get_channel_objects()
+        messages = []
+        channel_ids = []
+        for chan in channels.values():
+            channel_ids.append(chan.short_id_for_GUI())
+            messages.append(fmt % (chan.short_id_for_GUI(), self.config.format_amount(chan.get_capacity()), chan.get_state().name))
+        self.channel_ids = channel_ids
+        self.print_list(2, 1, messages, fmt % ("Scid", "Capacity", "State"))
 
     def print_send_tab(self):
         self.stdscr.clear()
-        self.print_edit_line(3, _("Pay to"), self.str_recipient, 0, 40)
-        self.print_edit_line(5, _("Description"), self.str_description, 1, 40)
-        self.print_edit_line(7, _("Amount"), self.str_amount, 2, 15)
-        self.print_edit_line(9, _("Fee"), self.str_fee, 3, 15)
-        self.stdscr.addstr(12, 15, _("[Send]"), curses.A_REVERSE if self.pos%6==4 else curses.color_pair(2))
-        self.stdscr.addstr(12, 25, _("[Clear]"), curses.A_REVERSE if self.pos%6==5 else curses.color_pair(2))
-        self.maxpos = 6
+        self.buttons = {}
+        self.max_pos = 7 + len(list(self.wallet.get_unpaid_invoices()))
+        self.index = 0
+        self.add_edit_line(3, 2, _("Pay to"), self.str_recipient, 40)
+        self.add_edit_line(5, 2, _("Description"), self.str_description, 40)
+        self.add_edit_line(7, 2, _("Amount"), self.str_amount, 15)
+        self.stdscr.addstr(7, 31, self.config.get_base_unit())
+        self.add_button(9, 15, _("[Paste]"), self.do_paste)
+        self.add_button(9, 25, _("[Clear]"), self.do_clear)
+        self.add_button(9, 35, _("[Save]"), self.do_save_invoice)
+        self.add_button(9, 44, _("[Pay]"), self.do_pay)
+        #
+        self.print_invoices_list(13, 2, offset_pos=7)
+
+    def add_edit_line(self, y, x, title, data, length):
+        self.print_edit_line(y, x, title, data, self.index, length)
+        self.index += 1
+
+    def add_button(self, y, x, title, action):
+        self.print_button(y, x, title, self.index)
+        self.buttons[self.index] = action
+        self.index += 1
 
     def print_banner(self):
         if self.network and self.network.banner:
             banner = self.network.banner
             banner = banner.replace('\r', '')
-            self.print_list(banner.split('\n'))
+            self.print_list(2, 1, banner.split('\n'))
 
-    def print_qr(self, data):
+    def get_qr(self, data):
         import qrcode
         try:
             from StringIO import StringIO
         except ImportError:
             from io import StringIO
-
         s = StringIO()
         self.qr = qrcode.QRCode()
         self.qr.add_data(data)
         self.qr.print_ascii(out=s, invert=False)
         msg = s.getvalue()
         lines = msg.split('\n')
+        return lines
+
+    def print_qr(self, w, y, x, lines):
         try:
             for i, l in enumerate(lines):
                 l = l.encode("utf-8")
-                self.stdscr.addstr(i+5, 5, l, curses.color_pair(3))
+                w.addstr(y + i, x, l, curses.color_pair(3))
         except curses.error:
             m = 'error. screen too small?'
             m = m.encode(self.encoding)
-            self.stdscr.addstr(5, 1, m, 0)
+            w.addstr(y, x, m, 0)
 
-
-    def print_list(self, lst, firstline = None):
-        lst = list(lst)
-        self.maxpos = len(lst)
-        if not self.maxpos: return
-        if firstline:
-            firstline += " "*(self.maxx -2 - len(firstline))
-            self.stdscr.addstr(1, 1, firstline)
-        for i in range(self.maxy-4):
-            msg = lst[i] if i < len(lst) else ""
+    def print_list(self, y, x, lst, headers=None, offset_pos=0):
+        self.list_length = len(lst)
+        if not self.list_length:
+            return
+        if headers:
+            headers += " "*(self.maxx -2 - len(headers))
+            self.stdscr.addstr(y, x, headers, curses.A_BOLD)
+        for i in range(self.maxy - 2 - y):
+            msg = lst[i] if i < self.list_length else ""
             msg += " "*(self.maxx - 2 - len(msg))
             m = msg[0:self.maxx - 2]
             m = m.encode(self.encoding)
-            self.stdscr.addstr(i+2, 1, m, curses.A_REVERSE if i == (self.pos % self.maxpos) else 0)
+            selected = self.pos >= offset_pos and (i == ((self.pos - offset_pos) % self.list_length))
+            self.stdscr.addstr(i+y+1, x, m, curses.A_REVERSE if selected else 0)
+
+        self.max_pos = self.list_length + offset_pos
 
     def refresh(self):
-        if self.tab == -1: return
+        if self.tab == -1:
+            return
         self.stdscr.border(0)
         self.print_balance()
+        self.print_clipboard()
         self.stdscr.refresh()
 
+    def increase_cursor(self, delta):
+        self.pos += delta
+        self.pos = max(0, self.pos)
+        self.pos = min(self.pos, self.max_pos - 1)
+
+    def getch(self, redraw=False):
+        while True:
+            c = self.stdscr.getch()
+            if c != -1:
+                return c
+            if self.need_update and redraw:
+                self.update()
+            if self.tab == -1:
+                return KEY_ESC
+
     def main_command(self):
-        c = self.stdscr.getch()
-        print(c)
+        c = self.getch(redraw=True)
         cc = curses.unctrl(c).decode()
-        if   c == curses.KEY_RIGHT: self.tab = (self.tab + 1)%self.num_tabs
-        elif c == curses.KEY_LEFT: self.tab = (self.tab - 1)%self.num_tabs
-        elif c == curses.KEY_DOWN: self.pos +=1
-        elif c == curses.KEY_UP: self.pos -= 1
-        elif c == 9: self.pos +=1 # tab
-        elif cc in ['^W', '^C', '^X', '^Q']: self.tab = -1
-        elif cc in ['^N']: self.network_dialog()
-        elif cc == '^S': self.settings_dialog()
-        else: return c
-        if self.pos<0: self.pos=0
-        if self.pos>=self.maxpos: self.pos=self.maxpos - 1
+        if   c == curses.KEY_RIGHT:
+            self.tab = (self.tab + 1)%self.num_tabs
+        elif c == curses.KEY_LEFT:
+            self.tab = (self.tab - 1)%self.num_tabs
+        elif c in [curses.KEY_DOWN, ord("\t")]:
+            self.increase_cursor(1)
+        elif c == curses.KEY_UP:
+            self.increase_cursor(-1)
+        elif cc in ['^W', '^C', '^X', '^Q']:
+            self.tab = -1
+        elif cc in ['^N']:
+            self.network_dialog()
+        elif cc == '^S':
+            self.settings_dialog()
+        else:
+            return c
 
     def run_tab(self, i, print_func, exec_func):
         while self.tab == i:
@@ -269,44 +473,37 @@ class ElectrumGui(BaseElectrumGui):
             c = self.main_command()
             if c: exec_func(c)
 
-
     def run_history_tab(self, c):
         # Get txid from cursor position
-        if c == 10:
+        if c == ord("\n"):
             out = self.run_popup('', ['Transaction ID:', self.txid[self.pos]])
 
-
     def edit_str(self, target, c, is_num=False):
+        if target is None:
+            target = ''
         # detect backspace
         cc = curses.unctrl(c).decode()
-        if c in [8, 127, 263] and target:
+        if c in [KEY_BACKSPACE, KEY_DELETE, curses.KEY_BACKSPACE] and target:
             target = target[:-1]
         elif not is_num or cc in '0123456789.':
             target += cc
         return target
 
-
     def run_send_tab(self, c):
-        if self.pos%6 == 0:
+        self.pos = self.pos % self.max_pos
+        if self.pos == 0:
             self.str_recipient = self.edit_str(self.str_recipient, c)
-        if self.pos%6 == 1:
+        elif self.pos == 1:
             self.str_description = self.edit_str(self.str_description, c)
-        if self.pos%6 == 2:
+        elif self.pos == 2:
             self.str_amount = self.edit_str(self.str_amount, c, True)
-        elif self.pos%6 == 3:
-            self.str_fee = self.edit_str(self.str_fee, c, True)
-        elif self.pos%6==4:
-            if c == 10: self.do_send()
-        elif self.pos%6==5:
-            if c == 10: self.do_clear()
-
-
-    def run_receive_tab(self, c):
-        if c == 10:
-            out = self.run_popup('Address', ["Edit label", "Freeze", "Prioritize"])
+        elif self.pos in self.buttons and c == ord("\n"):
+            self.buttons[self.pos]()
+        elif self.pos >= 7 and c == ord("\n"):
+            self.show_invoice_menu()
 
     def run_contacts_tab(self, c):
-        if c == 10 and self.contacts:
+        if c == ord("\n") and self.contacts:
             out = self.run_popup('Address', ["Copy", "Pay to", "Edit label", "Delete"]).get('button')
             key = list(self.contacts.keys())[self.pos%len(self.contacts.keys())]
             if out == "Pay to":
@@ -316,29 +513,44 @@ class ElectrumGui(BaseElectrumGui):
             elif out == "Edit label":
                 s = self.get_string(6 + self.pos, 18)
                 if s:
-                    self.wallet.set_label(key, s)
+                    self.contacts[key] = ('address', s)
+            elif out == "Delete":
+                self.contacts.pop(key)
+                self.pos = 0
+
+    def run_addresses_tab(self, c):
+        pass
+
+    def run_utxos_tab(self, c):
+        pass
+
+    def run_channels_tab(self, c):
+        if c == ord("\n") and self.channel_ids:
+            out = self.run_popup('Channel Details', ['Short channel ID:', self.channel_ids[self.pos]])
 
     def run_banner_tab(self, c):
         self.show_message(repr(c))
         pass
 
     def main(self):
-
+        self.daemon.start_network()
         tty.setraw(sys.stdin)
         try:
             while self.tab != -1:
-                self.run_tab(0, self.print_history, self.run_history_tab)
-                self.run_tab(1, self.print_send_tab, self.run_send_tab)
-                self.run_tab(2, self.print_receive, self.run_receive_tab)
-                self.run_tab(3, self.print_addresses, self.run_banner_tab)
-                self.run_tab(4, self.print_contacts, self.run_contacts_tab)
-                self.run_tab(5, self.print_banner, self.run_banner_tab)
+                self.run_tab(0, self.print_history,       self.run_history_tab)
+                self.run_tab(1, self.print_send_tab,      self.run_send_tab)
+                self.run_tab(2, self.print_receive_tab,   self.run_receive_tab)
+                self.run_tab(3, self.print_addresses,     self.run_addresses_tab)
+                self.run_tab(4, self.print_utxos,         self.run_utxos_tab)
+                self.run_tab(5, self.print_channels,      self.run_channels_tab)
+                self.run_tab(6, self.print_contacts,      self.run_contacts_tab)
+                self.run_tab(7, self.print_banner,        self.run_banner_tab)
         except curses.error as e:
             raise Exception("Error with curses. Is your screen too small?") from e
         finally:
             tty.setcbreak(sys.stdin)
             curses.nocbreak()
-            self.stdscr.keypad(0)
+            self.stdscr.keypad(False)
             curses.echo()
             curses.endwin()
 
@@ -348,38 +560,153 @@ class ElectrumGui(BaseElectrumGui):
         self.str_fee = ''
         self.str_description = ''
 
-    def do_send(self):
-        if not is_address(self.str_recipient):
-            self.show_message(_('Invalid Monacoin address'))
-            return
-        try:
-            amount = int(Decimal(self.str_amount) * COIN)
-        except Exception:
-            self.show_message(_('Invalid Amount'))
-            return
-        try:
-            fee = int(Decimal(self.str_fee) * COIN)
-        except Exception:
-            self.show_message(_('Invalid Fee'))
-            return
+    def do_create_request(self, lightning: bool):
+        amount_sat = self.parse_amount(self.str_recv_amount) or 0
+        if not lightning:
+            if amount_sat and amount_sat < self.wallet.dust_threshold():
+                self.show_message(_('Amount too low'))
+                return
+            address = self.wallet.get_unused_address()
+            if not address:
+                self.show_message(_('No more unused address'))
+                return
+        else:
+            if not self.wallet.has_lightning():
+                self.show_message(_('Lightning is disabled on this wallet'))
+                return
+            address = None
 
+        message = self.str_recv_description
+        expiry = self.config.WALLET_PAYREQ_EXPIRY_SECONDS
+        key = self.wallet.create_request(amount_sat, message, expiry, address)
+        self.do_clear_request()
+        self.pos = self.max_pos
+        self.show_request(key)
+
+    def do_clear_request(self):
+        self.str_recv_amount = ""
+        self.str_recv_description = ""
+
+    def do_paste(self):
+        text = pyperclip.paste()
+        text = text.strip()
+        if not text:
+            return
+        if is_address(text):
+            self.str_recipient = text
+            self.lightning_invoice = None
+        elif out := parse_bip21(text):
+            amount_sat = out.get('amount')
+            self.str_amount = self.config.format_amount(amount_sat) if amount_sat is not None else ''
+            self.str_recipient = out.get('address') or ''
+            self.str_description = out.get('message') or ''
+            self.lightning_invoice = None
+        elif lnaddr := parse_bolt11(text):
+            amount_sat = lnaddr.get_amount_sat()
+            self.str_recipient = lnaddr.pubkey.serialize().hex()
+            self.str_description = lnaddr.get_description()
+            self.str_amount = self.config.format_amount(amount_sat) if amount_sat is not None else ''
+            self.lightning_invoice = text
+        else:
+            self.show_message(_('Could not parse clipboard text') + '\n\n' + text[0:20] + '...')
+
+    def parse_amount(self, text):
+        try:
+            x = Decimal(text)
+        except Exception:
+            return None
+        power = pow(10, self.config.BTC_AMOUNTS_DECIMAL_POINT)
+        return int(power * x)
+
+    def read_invoice(self):
+        if self.lightning_invoice:
+            invoice = Invoice.from_bech32(self.lightning_invoice)
+            if invoice.amount_msat is None:
+                amount_sat = self.parse_amount(self.str_amount)
+                if amount_sat:
+                    invoice.set_amount_msat(int(amount_sat * 1000))
+                else:
+                    self.show_message(_('No amount'))
+                    return None
+        elif is_address(self.str_recipient):
+            amount_sat = self.parse_amount(self.str_amount)
+            if not amount_sat:
+                self.show_message(_('No amount'))
+                return None
+            scriptpubkey = address_to_script(self.str_recipient)
+            outputs = [PartialTxOutput(scriptpubkey=scriptpubkey, value=amount_sat)]
+            invoice = self.wallet.create_invoice(
+                outputs=outputs,
+                message=self.str_description,
+                URI=None,
+            )
+        else:
+            self.show_message(_('Invalid Monacoin address'))
+            return None
+        return invoice
+
+    def do_save_invoice(self):
+        invoice = self.read_invoice()
+        if not invoice:
+            return
+        self.save_pending_invoice(invoice)
+
+    def save_pending_invoice(self, invoice):
+        self.do_clear()
+        self.wallet.save_invoice(invoice)
+        self.pending_invoice = None
+
+    def do_pay(self):
+        invoice = self.read_invoice()
+        if not invoice:
+            return
+        self.do_pay_invoice(invoice)
+
+    def do_pay_invoice(self, invoice):
+        if invoice.is_lightning():
+            self.pay_lightning_invoice(invoice)
+        else:
+            self.pay_onchain_dialog(invoice)
+
+    def pay_lightning_invoice(self, invoice):
+        amount_msat = invoice.get_amount_msat()
+        msg = _("Pay lightning invoice?")
+        #+ '\n\n' + _("This will send {}?").format(self.format_amount_and_units(Decimal(amount_msat)/1000))
+        if not self.question(msg):
+            return
+        self.save_pending_invoice(invoice)
+        coro = self.wallet.lnworker.pay_invoice(invoice, amount_msat=amount_msat)
+
+        #self.window.run_coroutine_from_thread(coro, _('Sending payment'))
+        self.show_message(_("Please wait..."), getchar=False)
+        try:
+            self.network.run_from_another_thread(coro)
+        except Exception as e:
+            self.show_message(str(e))
+        else:
+            self.show_message(_('Payment sent.'))
+
+    def pay_onchain_dialog(self, invoice):
         if self.wallet.has_password():
             password = self.password_dialog()
             if not password:
                 return
         else:
             password = None
+        fee_policy = FeePolicy(self.config.FEE_POLICY)
         try:
-            tx = self.wallet.mktx(outputs=[PartialTxOutput.from_address_and_value(self.str_recipient, amount)],
-                                  password=password,
-                                  fee=fee)
+            tx = self.wallet.make_unsigned_transaction(
+                outputs=invoice.outputs,
+                fee_policy=fee_policy,
+            )
+            self.wallet.sign_transaction(tx, password)
         except Exception as e:
             self.show_message(repr(e))
             return
-
         if self.str_description:
             self.wallet.set_label(tx.txid(), self.str_description)
 
+        self.save_pending_invoice(invoice)
         self.show_message(_("Please wait..."), getchar=False)
         try:
             self.network.run_from_another_thread(self.network.broadcast_transaction(tx))
@@ -401,7 +728,8 @@ class ElectrumGui(BaseElectrumGui):
         for i, line in enumerate(message.split('\n')):
             w.addstr(2+i,2,line)
         w.refresh()
-        if getchar: c = self.stdscr.getch()
+        if getchar:
+            c = self.getch()
 
     def run_popup(self, title, items):
         return self.run_dialog(title, list(map(lambda x: {'type':'button','label':x}, items)), interval=1, y_pos = self.pos+3)
@@ -414,10 +742,13 @@ class ElectrumGui(BaseElectrumGui):
         proxy_config, auto_connect = net_params.proxy, net_params.auto_connect
         srv = 'auto-connect' if auto_connect else str(self.network.default_server)
         out = self.run_dialog('Network', [
-            {'label':'server', 'type':'str', 'value':srv},
-            {'label':'proxy', 'type':'str', 'value':self.config.get('proxy', '')},
-            ], buttons = 1)
+            {'label': 'server', 'type': 'str', 'value': srv},
+            {'label': 'proxy', 'type': 'str', 'value': self.config.NETWORK_PROXY},
+            {'label': 'proxy user', 'type': 'str', 'value': self.config.NETWORK_PROXY_USER},
+            {'label': 'proxy pass', 'type': 'str', 'value': self.config.NETWORK_PROXY_PASSWORD},
+            ], buttons=1)
         if out:
+            self.show_message(repr(proxy_config))
             if out.get('server'):
                 server_str = out.get('server')
                 auto_connect = server_str == 'auto-connect'
@@ -427,30 +758,36 @@ class ElectrumGui(BaseElectrumGui):
                     except Exception:
                         self.show_message("Error:" + server_str + "\nIn doubt, type \"auto-connect\"")
                         return False
-            if out.get('server') or out.get('proxy'):
-                proxy = electrum_mona.network.deserialize_proxy(out.get('proxy')) if out.get('proxy') else proxy_config
-                net_params = NetworkParameters(server=server_addr,
-                                               proxy=proxy,
-                                               auto_connect=auto_connect)
+            if out.get('server') or out.get('proxy') or out.get('proxy user') or out.get('proxy pass'):
+                if out.get('proxy'):
+                    new_proxy_config = ProxySettings()
+                    new_proxy_config.deserialize_proxy_cfgstr(out.get('proxy'))
+                    new_proxy_config.user = out.get('proxy user', proxy_config.user)
+                    new_proxy_config.password = out.get('proxy pass', proxy_config.password)
+                    new_proxy_config.enabled = True
+                else:
+                    new_proxy_config = proxy_config
+                net_params = NetworkParameters(
+                    server=server_addr,
+                    proxy=new_proxy_config,
+                    auto_connect=auto_connect)
                 self.network.run_from_another_thread(self.network.set_parameters(net_params))
 
     def settings_dialog(self):
-        fee = str(Decimal(self.config.fee_per_kb()) / COIN)
+        from electrum_mona.fee_policy import FeePolicy
         out = self.run_dialog('Settings', [
-            {'label':'Default fee', 'type':'satoshis', 'value': fee}
-            ], buttons = 1)
+            {'label':'Fee policy', 'type':'str', 'value': self.config.FEE_POLICY}
+        ], buttons = 1)
         if out:
-            if out.get('Default fee'):
-                fee = int(Decimal(out['Default fee']) * COIN)
-                self.config.set_key('fee_per_kb', fee, True)
-
+            if descr := out.get('Fee policy'):
+                fee_policy = FeePolicy(descr)
+                self.config.FEE_POLICY = fee_policy.get_descriptor()
 
     def password_dialog(self):
         out = self.run_dialog('Password', [
             {'label':'Password', 'type':'password', 'value':''}
             ], buttons = 1)
         return out.get('Password')
-
 
     def run_dialog(self, title, items, interval=2, buttons=None, y_pos=3):
         self.popup_pos = 0
@@ -462,12 +799,10 @@ class ElectrumGui(BaseElectrumGui):
             w.clear()
             w.border(0)
             w.addstr(0, 2, title)
-
             num = len(list(items))
-
             numpos = num
-            if buttons: numpos += 2
-
+            if buttons:
+                numpos += 2
             for i in range(num):
                 item = items[i]
                 label = item.get('label')
@@ -498,13 +833,16 @@ class ElectrumGui(BaseElectrumGui):
 
             w.refresh()
 
-            c = self.stdscr.getch()
-            if c in [ord('q'), 27]: break
-            elif c in [curses.KEY_LEFT, curses.KEY_UP]: self.popup_pos -= 1
-            elif c in [curses.KEY_RIGHT, curses.KEY_DOWN]: self.popup_pos +=1
+            c = self.getch()
+            if c in [ord('q'), KEY_ESC]:
+                break
+            elif c in [curses.KEY_LEFT, curses.KEY_UP]:
+                self.popup_pos -= 1
+            elif c in [curses.KEY_RIGHT, curses.KEY_DOWN]:
+                self.popup_pos +=1
             else:
                 i = self.popup_pos%numpos
-                if buttons and c==10:
+                if buttons and c == ord("\n"):
                     if i == numpos-2:
                         return out
                     elif i == numpos -1:
@@ -538,5 +876,70 @@ class ElectrumGui(BaseElectrumGui):
                 elif _type == 'button':
                     out['button'] = item.get('label')
                     break
-
         return out
+
+    def print_textbox(self, w, y, x, _text, highlighted):
+        width = 60
+        for i in range(len(_text)//width + 1):
+            s = _text[i*width:(i+1)*width]
+            w.addstr(y+i, x, s, curses.A_REVERSE if highlighted else curses.A_NORMAL)
+        return i
+
+    def show_request(self, key):
+        req = self.wallet.get_request(key)
+        addr = req.get_address() or ''
+        URI = self.wallet.get_request_URI(req) or ''
+        lnaddr = self.wallet.get_bolt11_invoice(req) or ''
+        w = curses.newwin(self.maxy - 2, self.maxx - 2, 1, 1)
+        pos = 2
+        text = URI or addr or lnaddr
+        data = URI or addr or lnaddr.upper()
+        while True:
+            w.clear()
+            w.border(0)
+            w.addstr(0, 2, ' ' + _('Payment Request') + ' ')
+            y = 2
+            if URI:
+                w.addstr(y, 2, "URI")
+                h = self.print_textbox(w, y, 13, URI, False)
+            elif addr:
+                w.addstr(y, 2, "Address")
+                h = self.print_textbox(w, y, 13, addr, False)
+            elif lnaddr:
+                w.addstr(y, 2, "Lightning")
+                h = self.print_textbox(w, y, 13, lnaddr, False)
+            else:
+                return
+            y += h + 2
+            lines = self.get_qr(data)
+            qr_width = len(lines) * 2
+            x = self.maxx - qr_width
+            if x > 60:
+                self.print_qr(w, 1, x, lines)
+            else:
+                w.addstr(y, 35, "(Window too small for QR code)")
+            w.addstr(y, 13, "[Copy]",   curses.A_REVERSE if pos==0 else curses.color_pair(2))
+            w.addstr(y, 23, "[Delete]", curses.A_REVERSE if pos==1 else curses.color_pair(2))
+            w.addstr(y, 35, "[Close]",  curses.A_REVERSE if pos==2 else curses.color_pair(2))
+            w.refresh()
+            c = self.getch()
+            if c in [curses.KEY_UP, curses.KEY_LEFT]:
+                pos -= 1
+            elif c in [curses.KEY_DOWN, curses.KEY_RIGHT, ord("\t")]:
+                pos += 1
+            elif c == ord("\n"):
+                if pos == 0:
+                    pyperclip.copy(text)
+                    self.show_message('Text copied to clipboard')
+                elif pos == 1:
+                    if self.question("Delete Request?"):
+                        self.wallet.delete_request(key)
+                        self.max_pos -= 1
+                        break
+                elif pos == 2:
+                    break
+            else:
+                break
+            pos = pos % 3
+        self.stdscr.refresh()
+        return

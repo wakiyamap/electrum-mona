@@ -9,7 +9,7 @@ from electrum_mona.simple_config import SimpleConfig
 
 try:
     txid = sys.argv[1]
-except:
+except Exception:
     print("usage: txradar txid")
     sys.exit(1)
 
@@ -36,3 +36,5 @@ async def f():
         stopping_fut.set_result(1)
 
 asyncio.run_coroutine_threadsafe(f(), loop)
+while loop_thread.is_alive():
+    loop_thread.join(1)

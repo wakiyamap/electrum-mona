@@ -25,10 +25,8 @@
 
 import hashlib
 import time
-from datetime import datetime
 
-from . import util
-from .util import profiler, bh2u
+from .util import profiler, timestamp_to_datetime
 from .logging import get_logger
 
 
@@ -102,18 +100,6 @@ def decode_OID(s):
     return '.'.join(map(str, r))
 
 
-def encode_OID(oid):
-    x = [int(i) for i in oid.split('.')]
-    s = chr(x[0] * 40 + x[1])
-    for i in x[2:]:
-        ss = chr(i % 128)
-        while i > 128:
-            i //= 128
-            ss = chr(128 + i % 128) + ss
-        s += ss
-    return s
-
-
 class ASN1_Node(bytes):
     def get_node(self, ix):
         # return index of first byte, first content byte and last byte.
@@ -142,6 +128,7 @@ class ASN1_Node(bytes):
             raise TypeError('Can only open constructed types.', hex(self[ixs]))
         return self.get_node(ixf)
 
+    @staticmethod
     def is_child_of(node1, node2):
         ixs, ixf, ixl = node1
         jxs, jxf, jxl = node2
@@ -194,6 +181,7 @@ class ASN1_Node(bytes):
             return time.strptime(self.get_value_of_type(ii, 'UTCTime').decode('ascii'), UTCTIME_TIMESTAMP_FMT)
         except TypeError:
             return time.strptime(self.get_value_of_type(ii, 'GeneralizedTime').decode('ascii'), GENERALIZED_TIMESTAMP_FMT)
+
 
 class X509(object):
     def __init__(self, b):
@@ -272,10 +260,10 @@ class X509(object):
                     # Subject Key Identifier
                     r = value.root()
                     value = value.get_value_of_type(r, 'OCTET STRING')
-                    self.SKI = bh2u(value)
+                    self.SKI = value.hex()
                 elif oid == '2.5.29.35':
                     # Authority Key Identifier
-                    self.AKI = bh2u(value.get_sequence()[0])
+                    self.AKI = value.get_sequence()[0].hex()
                 else:
                     pass
 
@@ -307,7 +295,7 @@ class X509(object):
         if self.notBefore > now:
             raise CertificateError('Certificate has not entered its valid date range. (%s)' % self.get_common_name())
         if self.notAfter <= now:
-            dt = datetime.utcfromtimestamp(time.mktime(self.notAfter))
+            dt = timestamp_to_datetime(time.mktime(self.notAfter), utc=True)
             raise CertificateError(f'Certificate ({self.get_common_name()}) has expired (at {dt} UTC).')
 
     def getFingerprint(self):
@@ -315,8 +303,11 @@ class X509(object):
 
 
 @profiler
-def load_certificates(ca_path):
+def load_ca_certs():
+    # kept for console use
+    import certifi
     from . import pem
+    ca_path = certifi.where()
     ca_list = {}
     ca_keyID = {}
     # ca_path = '/tmp/tmp.txt'
@@ -326,22 +317,18 @@ def load_certificates(ca_path):
     for b in bList:
         try:
             x = X509(b)
-            x.check_date()
-        except BaseException as e:
+        except Exception as e:
             # with open('/tmp/tmp.txt', 'w') as f:
             #     f.write(pem.pem(b, 'CERTIFICATE').decode('ascii'))
             _logger.info(f"cert error: {e}")
             continue
-
+        try:
+            x.check_date()
+        except CertificateError as e:
+            _logger.info(f"cert has expired: {e}")
+            continue
         fp = x.getFingerprint()
         ca_list[fp] = x
         ca_keyID[x.get_keyID()] = fp
 
     return ca_list, ca_keyID
-
-
-if __name__ == "__main__":
-    import certifi
-
-    ca_path = certifi.where()
-    ca_list, ca_keyID = load_certificates(ca_path)

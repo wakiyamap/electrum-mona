@@ -6,13 +6,15 @@ from pythonforandroid.util import load_source
 util = load_source('util', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'util.py'))
 
 
-assert Sqlite3Recipe._version == "3.34.1"
+assert Sqlite3Recipe._version == "3.35.5"
 assert Sqlite3Recipe.depends == []
 assert Sqlite3Recipe.python_depends == []
 
 
 class Sqlite3RecipePinned(util.InheritedRecipeMixin, Sqlite3Recipe):
-    sha512sum = "8a936f1c34fc9036cadf5bd53f9ee594135c2efdef1d2c82bd4fdf3e0218afde710fc4c436cfc992687d008e6086a697da0487352ed88809d677e05d824940dd"
+    version = "3.50.0"
+    url = 'https://www.sqlite.org/2025/sqlite-amalgamation-3500000.zip'
+    sha512sum = "0fd87f2b8140300ce165600f6708aafef19041a181e9f00ed14f7aeaa3c06805c8c54c53751a9ce74d4d666f018ca6f48e3f5b5c874ccb9e1424a528c92326f0"
 
 
 recipe = Sqlite3RecipePinned()

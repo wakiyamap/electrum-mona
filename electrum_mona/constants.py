@@ -23,26 +23,43 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import copy
 import os
 import json
+from typing import Sequence, Tuple, Mapping, Type, List, Optional
 
-from .util import inv_dict, all_subclasses
+from .lntransport import LNPeerAddr
+from .util import inv_dict, all_subclasses, classproperty
 from . import bitcoin
 
 
-def read_json(filename, default):
+def read_json(filename, default=None):
     path = os.path.join(os.path.dirname(__file__), filename)
     try:
         with open(path, 'r') as f:
             r = json.loads(f.read())
-    except:
+    except Exception:
+        if default is None:
+            # Sometimes it's better to hard-fail: the file might be missing
+            # due to a packaging issue, which might otherwise go unnoticed.
+            raise
         r = default
     return r
 
 
+def create_fallback_node_list(fallback_nodes_dict: dict[str, dict]) -> List[LNPeerAddr]:
+    """Take a json dict of fallback nodes like: k:node_id, v:{k:'host', k:'port'} and return LNPeerAddr list"""
+    fallback_nodes = []
+    for node_id, address in fallback_nodes_dict.items():
+        fallback_nodes.append(
+            LNPeerAddr(host=address['host'], port=int(address['port']), pubkey=bytes.fromhex(node_id)))
+    return fallback_nodes
+
+
 GIT_REPO_URL = "https://github.com/wakiyamap/electrum-mona"
 GIT_REPO_ISSUES_URL = "https://github.com/wakiyamap/electrum-mona/issues"
-BIP39_WALLET_FORMATS = read_json('bip39_wallet_formats.json', [])
+RELEASE_NOTES_URL = "https://raw.githubusercontent.com/wakiyamap/electrum-mona/refs/heads/master/RELEASE-NOTES"
+BIP39_WALLET_FORMATS = read_json('bip39_wallet_formats.json')
 
 
 class AbstractNet:
@@ -52,12 +69,19 @@ class AbstractNet:
     WIF_PREFIX: int
     ADDRTYPE_P2PKH: int
     ADDRTYPE_P2SH: int
+    ADDRTYPE_P2SH_ALT: int  # legacy p2sh version byte, still accepted when parsing addresses
     SEGWIT_HRP: str
     BOLT11_HRP: str
     GENESIS: str
     BLOCK_HEIGHT_FIRST_LIGHTNING_CHANNELS: int = 0
     BIP44_COIN_TYPE: int
     LN_REALM_BYTE: int
+    DEFAULT_PORTS: Mapping[str, str]
+    LN_DNS_SEEDS: Sequence[str]
+    XPRV_HEADERS: Mapping[str, int]
+    XPRV_HEADERS_INV: Mapping[int, str]
+    XPUB_HEADERS: Mapping[str, int]
+    XPUB_HEADERS_INV: Mapping[int, str]
 
     @classmethod
     def max_checkpoint(cls) -> int:
@@ -65,7 +89,59 @@ class AbstractNet:
 
     @classmethod
     def rev_genesis_bytes(cls) -> bytes:
-        return bytes.fromhex(bitcoin.rev_hex(cls.GENESIS))
+        return bytes.fromhex(cls.GENESIS)[::-1]
+
+    @classmethod
+    def set_as_network(cls) -> None:
+        global net
+        net = cls
+
+    _cached_default_servers = None
+    @classproperty
+    def DEFAULT_SERVERS(cls) -> Mapping[str, Mapping[str, str]]:
+        if cls._cached_default_servers is None:
+            default_file = {} if cls.TESTNET else None  # for mainnet we hard-fail if the file is missing.
+            d = read_json(os.path.join('chains', cls.NET_NAME, 'servers.json'), default_file)
+            # sanity check
+            for k, v in d.items():
+                assert isinstance(v, dict), f'value for {k} not a dict in servers.json'
+                assert all(isinstance(v2, str) for v2 in v.values()), f'non-str values for key {k} in servers.json'
+            cls._cached_default_servers = d
+        return copy.deepcopy(cls._cached_default_servers)
+
+    _cached_fallback_lnnodes = None
+    @classproperty
+    def FALLBACK_LN_NODES(cls) -> Sequence[LNPeerAddr]:
+        if cls._cached_fallback_lnnodes is None:
+            default_file = {} if cls.TESTNET else None  # for mainnet we hard-fail if the file is missing.
+            d = read_json(os.path.join('chains', cls.NET_NAME, 'fallback_lnnodes.json'), default_file)
+            cls._cached_fallback_lnnodes = create_fallback_node_list(d)
+        return cls._cached_fallback_lnnodes
+
+    _cached_checkpoints = None
+    @classproperty
+    def CHECKPOINTS(cls) -> Sequence[Tuple[str, int]]:
+        if cls._cached_checkpoints is None:
+            default_file = [] if cls.TESTNET else None  # for mainnet we hard-fail if the file is missing.
+            cls._cached_checkpoints = read_json(os.path.join('chains', cls.NET_NAME, 'checkpoints.json'), default_file)
+        return cls._cached_checkpoints
+
+    @classmethod
+    def datadir_subdir(cls) -> Optional[str]:
+        """The name of the folder in the filesystem.
+        None means top-level, used by mainnet.
+        """
+        return cls.NET_NAME
+
+    @classmethod
+    def cli_flag(cls) -> str:
+        """as used in e.g. `$ run_electrum --testnet4`"""
+        return cls.NET_NAME
+
+    @classmethod
+    def config_key(cls) -> str:
+        """as used for SimpleConfig.get()"""
+        return cls.NET_NAME
 
 
 class BitcoinMainnet(AbstractNet):
@@ -80,9 +156,6 @@ class BitcoinMainnet(AbstractNet):
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "ff9f1c0116d19de7c9963845e129f9ed1bfc0b376eb54fd7afa42e0d418c8bb6"
     DEFAULT_PORTS = {'t': '50001', 's': '50002'}
-    DEFAULT_SERVERS = read_json('servers.json', {})
-    CHECKPOINTS = read_json('checkpoints.json', [])
-    BLOCK_HEIGHT_FIRST_LIGHTNING_CHANNELS = 497000
 
     XPRV_HEADERS = {
         'standard':    0x0488ade4,  # xprv
@@ -107,6 +180,10 @@ class BitcoinMainnet(AbstractNet):
         'soa.lnd.nodes.directory.',
     ]
 
+    @classmethod
+    def datadir_subdir(cls):
+        return None
+
 
 class BitcoinTestnet(AbstractNet):
 
@@ -120,8 +197,6 @@ class BitcoinTestnet(AbstractNet):
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "a2b106ceba3be0c6d097b2a6a6aacf9d638ba8258ae478158f449c321061e0b2"
     DEFAULT_PORTS = {'t': '51001', 's': '51002'}
-    DEFAULT_SERVERS = read_json('servers_testnet.json', {})
-    CHECKPOINTS = read_json('checkpoints_testnet.json', [])
 
     XPRV_HEADERS = {
         'standard':    0x04358394,  # tprv
@@ -146,14 +221,19 @@ class BitcoinTestnet(AbstractNet):
     ]
 
 
+class BitcoinTestnet4(BitcoinTestnet):
+
+    NET_NAME = "testnet4"
+    GENESIS = "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"
+    LN_DNS_SEEDS = []
+
+
 class BitcoinRegtest(BitcoinTestnet):
 
     NET_NAME = "regtest"
     SEGWIT_HRP = "rmona"
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "7543a69d7c2fcdb29a5ebec2fc064c074a35253b6f3072c8a749473aa590a29c"
-    DEFAULT_SERVERS = read_json('servers_regtest.json', {})
-    CHECKPOINTS = []
     LN_DNS_SEEDS = []
 
 
@@ -166,8 +246,6 @@ class BitcoinSimnet(BitcoinTestnet):
     SEGWIT_HRP = "smona"
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "683e86bd5c6d110d91b94b97137ba6bfe02dbbdb8e3dff722a669b5d69d77af6"
-    DEFAULT_SERVERS = read_json('servers_regtest.json', {})
-    CHECKPOINTS = []
     LN_DNS_SEEDS = []
 
 
@@ -176,32 +254,24 @@ class BitcoinSignet(BitcoinTestnet):
     NET_NAME = "signet"
     BOLT11_HRP = "tmonas"
     GENESIS = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6"
-    DEFAULT_SERVERS = read_json('servers_signet.json', {})
-    CHECKPOINTS = []
     LN_DNS_SEEDS = []
 
 
-NETS_LIST = tuple(all_subclasses(AbstractNet))
+class BitcoinMutinynet(BitcoinTestnet):
+
+    NET_NAME = "mutinynet"
+    BOLT11_HRP = "tbs"
+    GENESIS = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6"
+    LN_DNS_SEEDS = []
+
+
+NETS_LIST = tuple(all_subclasses(AbstractNet))  # type: Sequence[Type[AbstractNet]]
+NETS_LIST = tuple(sorted(NETS_LIST, key=lambda x: x.NET_NAME))
+
+assert len(NETS_LIST) == len(set([chain.NET_NAME for chain in NETS_LIST])), "NET_NAME must be unique for each concrete AbstractNet"
+assert len(NETS_LIST) == len(set([chain.datadir_subdir() for chain in NETS_LIST])), "datadir must be unique for each concrete AbstractNet"
+assert len(NETS_LIST) == len(set([chain.cli_flag() for chain in NETS_LIST])), "cli_flag must be unique for each concrete AbstractNet"
+assert len(NETS_LIST) == len(set([chain.config_key() for chain in NETS_LIST])), "config_key must be unique for each concrete AbstractNet"
 
 # don't import net directly, import the module instead (so that net is singleton)
-net = BitcoinMainnet
-
-def set_signet():
-    global net
-    net = BitcoinSignet
-
-def set_simnet():
-    global net
-    net = BitcoinSimnet
-
-def set_mainnet():
-    global net
-    net = BitcoinMainnet
-
-def set_testnet():
-    global net
-    net = BitcoinTestnet
-
-def set_regtest():
-    global net
-    net = BitcoinRegtest
+net = BitcoinMainnet  # type: Type[AbstractNet]

@@ -28,13 +28,14 @@ import stat
 import hashlib
 import base64
 import zlib
-from enum import IntEnum
+from typing import Optional
 
-from . import ecc
+import electrum_ecc as ecc
+
+from . import crypto
 from .util import (profiler, InvalidPassword, WalletFileException, bfh, standardize_path,
-                   test_read_write_permissions)
+                   test_read_write_permissions, os_chmod)
 
-from .wallet_db import WalletDB
 from .logging import Logger
 
 
@@ -44,23 +45,30 @@ def get_derivation_used_for_hw_device_encryption():
             "/1112098098'")  # ascii 'BIE2' as decimal
 
 
-class StorageEncryptionVersion(IntEnum):
-    PLAINTEXT = 0
-    USER_PASSWORD = 1
-    XPUB_PASSWORD = 2
+from .stored_dict import StorageEncryptionVersion, StorageReadWriteError
 
 
-class StorageReadWriteError(Exception): pass
+
+
+class StorageOnDiskUnexpectedlyChanged(Exception): pass
 
 
 # TODO: Rename to Storage
 class WalletStorage(Logger):
 
-    def __init__(self, path):
+    # TODO maybe split this into separate create() and open() classmethods, to prevent some bugs.
+    #      Until then, the onus is on the caller to check file_exists().
+    def __init__(
+        self,
+        path,
+        *,
+        allow_partial_writes: bool = False,
+    ):
         Logger.__init__(self)
         self.path = standardize_path(path)
         self._file_exists = bool(self.path and os.path.exists(self.path))
         self.logger.info(f"wallet path {self.path}")
+        self._allow_partial_writes = allow_partial_writes
         self.pubkey = None
         self.decrypted = ''
         try:
@@ -68,41 +76,75 @@ class WalletStorage(Logger):
         except IOError as e:
             raise StorageReadWriteError(e) from e
         if self.file_exists():
-            with open(self.path, "r", encoding='utf-8') as f:
-                self.raw = f.read()
+            with open(self.path, "rb") as f:
+                self.raw = f.read().decode("utf-8")
+                self.pos = f.seek(0, os.SEEK_END)
+                self.init_pos = self.pos
             self._encryption_version = self._init_encryption_version()
         else:
             self.raw = ''
             self._encryption_version = StorageEncryptionVersion.PLAINTEXT
+            self.pos = 0
+            self.init_pos = 0
+
+    def get_path(self):
+        return self.path
 
     def read(self):
         return self.decrypted if self.is_encrypted() else self.raw
 
     def write(self, data: str) -> None:
-        s = self.encrypt_before_writing(data)
-        temp_path = "%s.tmp.%s" % (self.path, os.getpid())
-        with open(temp_path, "w", encoding='utf-8') as f:
-            f.write(s)
-            f.flush()
-            os.fsync(f.fileno())
-
         try:
             mode = os.stat(self.path).st_mode
         except FileNotFoundError:
             mode = stat.S_IREAD | stat.S_IWRITE
-
+        s = self.encrypt_before_writing(data)
+        temp_path = "%s.tmp.%s" % (self.path, os.getpid())
+        with open(temp_path, "wb") as f:
+            try:
+                os_chmod(temp_path, mode)  # set restrictive perms *before* we write data
+            except PermissionError as e:  # tolerate NFS or similar weirdness?
+                self.logger.warning(f"cannot chmod temp wallet file: {e!r}")
+            f.write(s.encode("utf-8"))
+            self.pos = f.seek(0, os.SEEK_END)
+            f.flush()
+            os.fsync(f.fileno())
         # assert that wallet file does not exist, to prevent wallet corruption (see issue #5082)
         if not self.file_exists():
             assert not os.path.exists(self.path)
         os.replace(temp_path, self.path)
-        os.chmod(self.path, mode)
         self._file_exists = True
         self.logger.info(f"saved {self.path}")
+
+    def append(self, data: str) -> None:
+        """ append data to file. for the moment, only non-encrypted file"""
+        assert self._allow_partial_writes
+        assert not self.is_encrypted()
+        with open(self.path, "rb+") as f:
+            pos = f.seek(0, os.SEEK_END)
+            if pos != self.pos:
+                raise StorageOnDiskUnexpectedlyChanged(f"expected size {self.pos}, found {pos}")
+            f.write(data.encode("utf-8"))
+            self.pos = f.seek(0, os.SEEK_END)
+            f.flush()
+            os.fsync(f.fileno())
+
+    def _needs_consolidation(self):
+        return self.pos > 2 * self.init_pos
+
+    def should_do_full_write_next(self) -> bool:
+        """If false, next action can be a partial-write ('append')."""
+        return (
+            not self.file_exists()
+            or self.is_encrypted()
+            or self._needs_consolidation()
+            or not self._allow_partial_writes
+        )
 
     def file_exists(self) -> bool:
         return self._file_exists
 
-    def is_past_initial_decryption(self):
+    def is_past_initial_decryption(self) -> bool:
         """Return if storage is in a usable state for normal operations.
 
         The value is True exactly
@@ -111,14 +153,14 @@ class WalletStorage(Logger):
         """
         return not self.is_encrypted() or bool(self.pubkey)
 
-    def is_encrypted(self):
+    def is_encrypted(self) -> bool:
         """Return if storage encryption is currently enabled."""
         return self.get_encryption_version() != StorageEncryptionVersion.PLAINTEXT
 
-    def is_encrypted_with_user_pw(self):
+    def is_encrypted_with_user_pw(self) -> bool:
         return self.get_encryption_version() == StorageEncryptionVersion.USER_PASSWORD
 
-    def is_encrypted_with_hw_device(self):
+    def is_encrypted_with_hw_device(self) -> bool:
         return self.get_encryption_version() == StorageEncryptionVersion.XPUB_PASSWORD
 
     def get_encryption_version(self):
@@ -134,18 +176,20 @@ class WalletStorage(Logger):
 
     def _init_encryption_version(self):
         try:
-            magic = base64.b64decode(self.raw)[0:4]
+            magic = base64.b64decode(self.raw, validate=True)[0:4]
             if magic == b'BIE1':
                 return StorageEncryptionVersion.USER_PASSWORD
             elif magic == b'BIE2':
                 return StorageEncryptionVersion.XPUB_PASSWORD
             else:
                 return StorageEncryptionVersion.PLAINTEXT
-        except:
+        except Exception:
             return StorageEncryptionVersion.PLAINTEXT
 
     @staticmethod
     def get_eckey_from_password(password):
+        if password is None:
+            password = ""
         secret = hashlib.pbkdf2_hmac('sha512', password.encode('utf-8'), b'', iterations=1024)
         ec_key = ecc.ECPrivkey.from_arbitrary_size_secret(secret)
         return ec_key
@@ -160,12 +204,13 @@ class WalletStorage(Logger):
             raise WalletFileException('no encryption magic for version: %s' % v)
 
     def decrypt(self, password) -> None:
+        """Raises an InvalidPassword exception on invalid password"""
         if self.is_past_initial_decryption():
             return
         ec_key = self.get_eckey_from_password(password)
         if self.raw:
             enc_magic = self._get_encryption_magic()
-            s = zlib.decompress(ec_key.decrypt_message(self.raw, enc_magic))
+            s = zlib.decompress(crypto.ecies_decrypt_message(ec_key, self.raw, magic=enc_magic))
             s = s.decode('utf8')
         else:
             s = ''
@@ -175,17 +220,20 @@ class WalletStorage(Logger):
     def encrypt_before_writing(self, plaintext: str) -> str:
         s = plaintext
         if self.pubkey:
+            self.decrypted = plaintext
             s = bytes(s, 'utf8')
             c = zlib.compress(s, level=zlib.Z_BEST_SPEED)
             enc_magic = self._get_encryption_magic()
             public_key = ecc.ECPubkey(bfh(self.pubkey))
-            s = public_key.encrypt_message(c, enc_magic)
+            s = crypto.ecies_encrypt_message(public_key, c, magic=enc_magic)
             s = s.decode('utf8')
         return s
 
-    def check_password(self, password) -> None:
+    def check_password(self, password: Optional[str]) -> None:
         """Raises an InvalidPassword exception on invalid password"""
         if not self.is_encrypted():
+            if password is not None:
+                raise InvalidPassword("password given but wallet has no password")
             return
         if not self.is_past_initial_decryption():
             self.decrypt(password)  # this sets self.pubkey

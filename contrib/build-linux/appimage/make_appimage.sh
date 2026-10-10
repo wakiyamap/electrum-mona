@@ -7,24 +7,28 @@ CONTRIB="$PROJECT_ROOT/contrib"
 CONTRIB_APPIMAGE="$CONTRIB/build-linux/appimage"
 DISTDIR="$PROJECT_ROOT/dist"
 BUILDDIR="$CONTRIB_APPIMAGE/build/appimage"
-APPDIR="$BUILDDIR/electrum-mona.AppDir"
+APPDIR="$BUILDDIR/electrum.AppDir"
 CACHEDIR="$CONTRIB_APPIMAGE/.cache/appimage"
-PIP_CACHE_DIR="$CACHEDIR/pip_cache"
+TYPE2_RUNTIME_REPO_DIR="$CACHEDIR/type2-runtime"
+export DLL_TARGET_DIR="$CACHEDIR/dlls"
+PIP_CACHE_DIR="$CONTRIB_APPIMAGE/.cache/pip_cache"
+
+. "$CONTRIB"/build_tools_util.sh
+
+git -C "$PROJECT_ROOT" rev-parse 2>/dev/null || fail "Building outside a git clone is not supported."
 
 export GCC_STRIP_BINARIES="1"
 
 # pinned versions
-PYTHON_VERSION=3.9.11
-PKG2APPIMAGE_COMMIT="eb8f3acdd9f11ab19b78f5cb15daa772367daf15"
+PYTHON_VERSION=3.12.14
+PY_VER_MAJOR="3.12"  # as it appears in fs paths
+PKG2APPIMAGE_COMMIT="a9c85b7e61a3a883f4a35c41c5decb5af88b6b5d"
 
-
-VERSION=`git describe --tags --dirty --always`
+VERSION=$(git describe --tags --dirty --always)
 APPIMAGE="$DISTDIR/electrum-mona-$VERSION-x86_64.AppImage"
 
-. "$CONTRIB"/build_tools_util.sh
-
 rm -rf "$BUILDDIR"
-mkdir -p "$APPDIR" "$CACHEDIR" "$PIP_CACHE_DIR" "$DISTDIR"
+mkdir -p "$APPDIR" "$CACHEDIR" "$PIP_CACHE_DIR" "$DISTDIR" "$DLL_TARGET_DIR"
 
 # potential leftover from setuptools that might make pip put garbage in binary
 rm -rf "$PROJECT_ROOT/build"
@@ -32,50 +36,73 @@ rm -rf "$PROJECT_ROOT/build"
 
 info "downloading some dependencies."
 download_if_not_exist "$CACHEDIR/functions.sh" "https://raw.githubusercontent.com/AppImage/pkg2appimage/$PKG2APPIMAGE_COMMIT/functions.sh"
-verify_hash "$CACHEDIR/functions.sh" "78b7ee5a04ffb84ee1c93f0cb2900123773bc6709e5d1e43c37519f590f86918"
+verify_hash "$CACHEDIR/functions.sh" "8f67711a28635b07ce539a9b083b8c12d5488c00003d6d726c7b134e553220ed"
 
-download_if_not_exist "$CACHEDIR/appimagetool" "https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage"
-verify_hash "$CACHEDIR/appimagetool" "df3baf5ca5facbecfc2f3fa6713c29ab9cefa8fd8c1eac5d283b79cab33e4acb"
+download_if_not_exist "$CACHEDIR/appimagetool" "https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage"
+verify_hash "$CACHEDIR/appimagetool" "46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1"
+# note: desktop-file-utils in the docker image is needed to run desktop-file-validate for appimagetool <= 1.9.0, so it can be removed once
+# appimagetool tags a new release (see https://github.com/AppImage/appimagetool/pull/47)
 
 download_if_not_exist "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" "https://www.python.org/ftp/python/$PYTHON_VERSION/Python-$PYTHON_VERSION.tar.xz"
-verify_hash "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" "66767a35309d724f370df9e503c172b4ee444f49d62b98bc4eca725123e26c49"
+verify_hash "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" "5c8462af5790baf43a321a1559dbe0db06d1be4300fb85fb53c40060668e548a"
 
 
 
 info "building python."
-tar xf "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" -C "$BUILDDIR"
+tar xf "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" -C "$CACHEDIR"
 (
-    cd "$BUILDDIR/Python-$PYTHON_VERSION"
+    if [ -f "$CACHEDIR/Python-$PYTHON_VERSION/python" ]; then
+        info "python already built, skipping"
+        exit 0
+    fi
+    cd "$CACHEDIR/Python-$PYTHON_VERSION"
     LC_ALL=C export BUILD_DATE=$(date -u -d "@$SOURCE_DATE_EPOCH" "+%b %d %Y")
     LC_ALL=C export BUILD_TIME=$(date -u -d "@$SOURCE_DATE_EPOCH" "+%H:%M:%S")
-    # Patch taken from Ubuntu http://archive.ubuntu.com/ubuntu/pool/main/p/python3.9/python3.9_3.9.5-3~21.04.debian.tar.xz
-    patch -p1 < "$CONTRIB_APPIMAGE/patches/python-3.9-reproducible-buildinfo.diff"
+    # Patches taken from Ubuntu http://archive.ubuntu.com/ubuntu/pool/main/p/python3.11/python3.11_3.11.6-3.debian.tar.xz
+    patch -p1 < "$CONTRIB_APPIMAGE/patches/python-3.11-reproducible-buildinfo.diff"
     ./configure \
-      --cache-file="$CACHEDIR/python.config.cache" \
-      --prefix="$APPDIR/usr" \
-      --enable-ipv6 \
-      --enable-shared \
-      -q
-    make -j4 -s || fail "Could not build Python"
+        --cache-file="$CACHEDIR/python.config.cache" \
+        --prefix="$APPDIR/usr" \
+        --enable-ipv6 \
+        --enable-shared \
+        -q
+    make "-j$CPU_COUNT" -s || fail "Could not build Python"
+)
+info "installing python."
+(
+    cd "$CACHEDIR/Python-$PYTHON_VERSION"
     make -s install > /dev/null || fail "Could not install Python"
     # When building in docker on macOS, python builds with .exe extension because the
     # case insensitive file system of macOS leaks into docker. This causes the build
     # to result in a different output on macOS compared to Linux. We simply patch
     # sysconfigdata to remove the extension.
     # Some more info: https://bugs.python.org/issue27631
-    sed -i -e 's/\.exe//g' "$APPDIR"/usr/lib/python3.9/_sysconfigdata*
+    sed -i -e 's/\.exe//g' "${APPDIR}/usr/lib/python${PY_VER_MAJOR}"/_sysconfigdata*
 )
 
 
-"$CONTRIB"/make_libsecp256k1.sh || fail "Could not build libsecp"
-cp -f "$PROJECT_ROOT/electrum_mona/libsecp256k1.so.0" "$APPDIR/usr/lib/libsecp256k1.so.0" || fail "Could not copy libsecp to its destination"
+if ls "$DLL_TARGET_DIR"/libsecp256k1.so.* 1> /dev/null 2>&1; then
+    info "libsecp256k1 already built, skipping"
+else
+    "$CONTRIB"/make_libsecp256k1.sh || fail "Could not build libsecp"
+fi
+cp -f "$DLL_TARGET_DIR"/libsecp256k1.so.* "$APPDIR/usr/lib/" || fail "Could not copy libsecp to its destination"
+
+
+if [ -f "$DLL_TARGET_DIR/libzbar.so.0" ]; then
+    info "libzbar already built, skipping"
+else
+    # note: could instead just use the libzbar0 pkg from debian/apt, but that is too old and missing fixes for CVE-2023-40889
+    "$CONTRIB"/make_zbar.sh || fail "Could not build zbar"
+fi
+cp -f "$DLL_TARGET_DIR/libzbar.so.0" "$APPDIR/usr/lib/" || fail "Could not copy libzbar to its destination"
 
 
 appdir_python() {
-  env \
-    PYTHONNOUSERSITE=1 \
-    LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH+:$LD_LIBRARY_PATH}" \
-    "$APPDIR/usr/bin/python3.9" "$@"
+    env \
+        PYTHONNOUSERSITE=1 \
+        LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH+:$LD_LIBRARY_PATH}" \
+        "$APPDIR/usr/bin/python${PY_VER_MAJOR}" "$@"
 }
 
 python='appdir_python'
@@ -89,38 +116,38 @@ break_legacy_easy_install
 
 info "preparing electrum-locale."
 (
-    cd "$PROJECT_ROOT"
-    git submodule update --init
-
-    pushd "$CONTRIB"/deterministic-build/electrum-locale
-    if ! which msgfmt > /dev/null 2>&1; then
-        fail "Please install gettext"
-    fi
+    "$CONTRIB/locale/build_cleanlocale.sh"
     # we want the binary to have only compiled (.mo) locale files; not source (.po) files
-    rm -rf "$PROJECT_ROOT/electrum_mona/locale/"
-    for i in ./locale/*; do
-        dir="$PROJECT_ROOT/electrum_mona/$i/LC_MESSAGES"
-        mkdir -p $dir
-        msgfmt --output-file="$dir/electrum.mo" "$i/electrum.po" || true
-    done
-    popd
+    rm -r "$PROJECT_ROOT/electrum_mona/locale/locale"/*/electrum.po
 )
 
 
 info "Installing build dependencies."
+# note: re pip installing from PyPI,
+#       we prefer compiling C extensions ourselves, instead of using binary wheels,
+#       hence "--no-binary :all:" flags. However, we specifically allow
+#       - PyQt6, as it's harder to build from source
+#       - cryptography, as it's harder to build from source
+#       - the whole of "requirements-build-base.txt", which includes pip and friends, as it also includes "wheel",
+#         and I am not quite sure how to break the circular dependence there (I guess we could introduce
+#         "requirements-build-base-base.txt" with just wheel in it...)
 "$python" -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-build-base.txt"
 "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-build-appimage.txt"
 
+
+# opt out of compiling C extensions
+export YARL_NO_EXTENSIONS=1
+export FROZENLIST_NO_EXTENSIONS=1
+export PROPCACHE_NO_EXTENSIONS=1
+
+export ELECTRUM_ECC_DONT_COMPILE=1
+
 info "installing electrum and its dependencies."
-# note: we prefer compiling C extensions ourselves, instead of using binary wheels,
-#       hence "--no-binary :all:" flags. However, we specifically allow
-#       - PyQt5, as it's harder to build from source
-#       - cryptography, as building it would need openssl 1.1, not available on ubuntu 16.04
-"$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
+CFLAGS="$LYRA2RE2_HASH_CFLAGS" "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements.txt"
-"$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --only-binary PyQt5,PyQt5-Qt5,cryptography --no-warn-script-location \
+"$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --only-binary PyQt6,PyQt6-Qt6,cryptography --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-binaries.txt"
 "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-hw.txt"
@@ -130,10 +157,6 @@ info "installing electrum and its dependencies."
 
 # was only needed during build time, not runtime
 "$python" -m pip uninstall -y Cython
-
-
-info "copying zbar"
-cp "/usr/lib/x86_64-linux-gnu/libzbar.so.0" "$APPDIR/usr/lib/libzbar.so.0"
 
 
 info "desktop integration."
@@ -155,11 +178,11 @@ info "finalizing AppDir."
     move_lib
 
     # apply global appimage blacklist to exclude stuff
-    # move usr/include out of the way to preserve usr/include/python3.9m.
+    # move usr/include out of the way to preserve usr/include/python${PY_VER_MAJOR}.
     mv usr/include usr/include.tmp
     delete_blacklisted
     mv usr/include.tmp usr/include
-) || fail "Could not finalize AppDir"
+)
 
 info "Copying additional libraries"
 (
@@ -176,51 +199,57 @@ info "stripping binaries from debug symbols."
 # "-R .comment" also strips the GCC version information
 strip_binaries()
 {
-  chmod u+w -R "$APPDIR"
-  {
-    printf '%s\0' "$APPDIR/usr/bin/python3.9"
-    find "$APPDIR" -type f -regex '.*\.so\(\.[0-9.]+\)?$' -print0
-  } | xargs -0 --no-run-if-empty --verbose strip -R .note.gnu.build-id -R .comment
+    chmod u+w -R "$APPDIR"
+    {
+        printf '%s\0' "$APPDIR/usr/bin/python${PY_VER_MAJOR}"
+        find "$APPDIR" -type f -regex '.*\.so\(\.[0-9.]+\)?$' -print0
+    } | xargs -0 --no-run-if-empty --verbose strip -R .note.gnu.build-id -R .comment
 }
 strip_binaries
 
 remove_emptydirs()
 {
-  find "$APPDIR" -type d -empty -print0 | xargs -0 --no-run-if-empty rmdir -vp --ignore-fail-on-non-empty
+    find "$APPDIR" -type d -empty -print0 | xargs -0 --no-run-if-empty rmdir -vp --ignore-fail-on-non-empty
 }
 remove_emptydirs
 
 
 info "removing some unneeded stuff to decrease binary size."
 rm -rf "$APPDIR"/usr/{share,include}
-PYDIR="$APPDIR"/usr/lib/python3.9
+PYDIR="$APPDIR/usr/lib/python${PY_VER_MAJOR}"
 rm -rf "$PYDIR"/{test,ensurepip,lib2to3,idlelib,turtledemo}
 rm -rf "$PYDIR"/{ctypes,sqlite3,tkinter,unittest}/test
 rm -rf "$PYDIR"/distutils/{command,tests}
-rm -rf "$PYDIR"/config-3.9m-x86_64-linux-gnu
+rm -rf "$PYDIR"/config-3.*-x86_64-linux-gnu
 rm -rf "$PYDIR"/site-packages/{opt,pip,setuptools,wheel}
 rm -rf "$PYDIR"/site-packages/Cryptodome/SelfTest
 rm -rf "$PYDIR"/site-packages/{psutil,qrcode,websocket}/tests
-# rm lots of unused parts of Qt/PyQt. (assuming PyQt 5.15.3+ layout)
+# rm lots of unused parts of Qt/PyQt. (assuming PyQt 6 layout)
 for component in connectivity declarative help location multimedia quickcontrols2 serialport webengine websockets xmlpatterns ; do
-  rm -rf "$PYDIR"/site-packages/PyQt5/Qt5/translations/qt${component}_*
-  rm -rf "$PYDIR"/site-packages/PyQt5/Qt5/resources/qt${component}_*
+    rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/translations/qt${component}_*
+    rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/resources/qt${component}_*
 done
-rm -rf "$PYDIR"/site-packages/PyQt5/Qt5/{qml,libexec}
-rm -rf "$PYDIR"/site-packages/PyQt5/{pyrcc*.so,pylupdate*.so,uic}
-rm -rf "$PYDIR"/site-packages/PyQt5/Qt5/plugins/{bearer,gamepads,geometryloaders,geoservices,playlistformats,position,renderplugins,sceneparsers,sensors,sqldrivers,texttospeech,webview}
-for component in Bluetooth Concurrent Designer Help Location NetworkAuth Nfc Positioning PositioningQuick Qml Quick Sensors SerialPort Sql Test Web Xml ; do
-    rm -rf "$PYDIR"/site-packages/PyQt5/Qt5/lib/libQt5${component}*
-    rm -rf "$PYDIR"/site-packages/PyQt5/Qt${component}*
+rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/{qml,libexec}
+rm -rf "$PYDIR"/site-packages/PyQt6/{pyrcc*.so,pylupdate*.so,uic}
+rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/plugins/{bearer,gamepads,geometryloaders,geoservices,playlistformats,position,renderplugins,sceneparsers,sensors,sqldrivers,texttospeech,webview}
+for component in Bluetooth Concurrent Designer Help Location NetworkAuth Nfc Positioning PositioningQuick Qml Quick Sensors SerialPort Sql Test Web Xml Labs ShaderTools SpatialAudio ; do
+    rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/lib/libQt6${component}*
+    rm -rf "$PYDIR"/site-packages/PyQt6/Qt${component}*
+    rm -rf "$PYDIR"/site-packages/PyQt6/bindings/Qt${component}*
 done
-rm -rf "$PYDIR"/site-packages/PyQt5/Qt.so
+for component in Qml Quick ; do
+    rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/lib/libQt6*${component}.so*
+done
+rm -rf "$PYDIR"/site-packages/PyQt6/Qt.so
 
 # these are deleted as they were not deterministic; and are not needed anyway
 find "$APPDIR" -path '*/__pycache__*' -delete
 # although note that *.dist-info might be needed by certain packages...
-# e.g. importlib-metadata, see https://gitlab.com/python-devs/importlib_metadata/issues/71
+# e.g. slip10 uses importlib that needs it
+for f in "$PYDIR"/site-packages/{slip10,trezor}-*.dist-info; do mv "$f" "$(echo "$f" | sed s/\.dist-info/\.dist-info2/)"; done
 rm -rf "$PYDIR"/site-packages/*.dist-info/
 rm -rf "$PYDIR"/site-packages/*.egg-info/
+for f in "$PYDIR"/site-packages/{slip10,trezor}-*.dist-info2; do mv "$f" "$(echo "$f" | sed s/\.dist-info2/\.dist-info/)"; done
 
 
 find -exec touch -h -d '2000-11-11T11:11:11+00:00' {} +
@@ -236,14 +265,14 @@ info "creating the AppImage."
     "$CACHEDIR/appimagetool_copy" --appimage-extract
     # We build a small wrapper for mksquashfs that removes the -mkfs-time option
     # as it conflicts with SOURCE_DATE_EPOCH.
-    mv "$BUILDDIR/squashfs-root/usr/lib/appimagekit/mksquashfs" "$BUILDDIR/squashfs-root/usr/lib/appimagekit/mksquashfs_orig"
-    cat > "$BUILDDIR/squashfs-root/usr/lib/appimagekit/mksquashfs" << EOF
+    mv "$BUILDDIR/squashfs-root/usr/bin/mksquashfs" "$BUILDDIR/squashfs-root/usr/bin/mksquashfs_orig"
+    cat > "$BUILDDIR/squashfs-root/usr/bin/mksquashfs" << EOF
 #!/bin/sh
 args=\$(echo "\$@" | sed -e 's/-mkfs-time 0//')
-"$BUILDDIR/squashfs-root/usr/lib/appimagekit/mksquashfs_orig" \$args
+"$BUILDDIR/squashfs-root/usr/bin/mksquashfs_orig" \$args
 EOF
-    chmod +x "$BUILDDIR/squashfs-root/usr/lib/appimagekit/mksquashfs"
-    env VERSION="$VERSION" ARCH=x86_64 ./squashfs-root/AppRun --no-appstream --verbose "$APPDIR" "$APPIMAGE"
+    chmod +x "$BUILDDIR/squashfs-root/usr/bin/mksquashfs"
+    env VERSION="$VERSION" ARCH=x86_64 ./squashfs-root/AppRun --runtime-file "$TYPE2_RUNTIME_REPO_DIR/runtime-x86_64" --no-appstream --verbose "$APPDIR" "$APPIMAGE"
 )
 
 

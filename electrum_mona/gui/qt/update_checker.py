@@ -4,19 +4,19 @@
 
 import asyncio
 import base64
-from distutils.version import LooseVersion
+from typing import Optional
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLabel, QProgressBar,
-                             QHBoxLayout, QPushButton, QDialog)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtWidgets import QVBoxLayout, QLabel, QProgressBar, QHBoxLayout, QPushButton, QDialog
 
 from electrum_mona import version
 from electrum_mona import constants
-from electrum_mona import ecc
+from electrum_mona.bitcoin import verify_usermessage_with_address
 from electrum_mona.i18n import _
 from electrum_mona.util import make_aiohttp_session
 from electrum_mona.logging import Logger
 from electrum_mona.network import Network
+from electrum_mona._vendor.distutils.version import LooseVersion
 
 
 class UpdateCheck(QDialog, Logger):
@@ -37,7 +37,7 @@ class UpdateCheck(QDialog, Logger):
         self.content.addWidget(self.heading_label)
 
         self.detail_label = QLabel()
-        self.detail_label.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
+        self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
         self.detail_label.setOpenExternalLinks(True)
         self.content.addWidget(self.detail_label)
 
@@ -47,8 +47,8 @@ class UpdateCheck(QDialog, Logger):
         self.content.addWidget(self.pb)
 
         versions = QHBoxLayout()
-        versions.addWidget(QLabel(_("Current version: {}".format(version.ELECTRUM_VERSION))))
-        self.latest_version_label = QLabel(_("Latest version: {}".format(" ")))
+        versions.addWidget(QLabel(_("Current version: {}").format(version.ELECTRUM_VERSION)))
+        self.latest_version_label = QLabel(_("Latest version: {}").format(" "))
         versions.addWidget(self.latest_version_label)
         self.content.addLayout(versions)
 
@@ -80,7 +80,7 @@ class UpdateCheck(QDialog, Logger):
     def update_view(self, latest_version=None):
         if latest_version:
             self.pb.hide()
-            self.latest_version_label.setText(_("Latest version: {}".format(latest_version)))
+            self.latest_version_label.setText(_("Latest version: {}").format(latest_version))
             if self.is_newer(latest_version):
                 self.heading_label.setText('<h2>' + _("There is a new update available") + '</h2>')
                 url = "<a href='{u}'>{u}</a>".format(u=UpdateCheck.download_url)
@@ -101,6 +101,7 @@ class UpdateCheckThread(QThread, Logger):
         QThread.__init__(self)
         Logger.__init__(self)
         self.network = Network.get_instance()
+        self._fut = None  # type: Optional[asyncio.Future]
 
     async def get_update_info(self):
         # note: Use long timeout here as it is not critical that we get a response fast,
@@ -112,7 +113,7 @@ class UpdateCheckThread(QThread, Logger):
                 # {
                 #     "version": "3.9.9",
                 #     "signatures": {
-                #         "MRkEwoPcvSPaC5WNtQMa7NGPy2tBKbp3Bm": "H84UFTdaBswxTrNty0gLlWiQEQhJA2Se5xVdhR9zFirKYg966IXEkC7km6phIJq+2CT3KwvKuj8YKaSCy1fErwg="
+                #         "1Lqm1HphuhxKZQEawzPse8gJtgjm9kUKT4": "IA+2QG3xPRn4HAIFdpu9eeaCYC7S5wS/sDxn54LJx6BdUTBpse3ibtfq8C43M7M1VfpGkD5tsdwl5C6IfpZD/gQ="
                 #     }
                 # }
                 version_num = signed_version_dict['version']
@@ -120,10 +121,12 @@ class UpdateCheckThread(QThread, Logger):
                 for address, sig in sigs.items():
                     if address not in UpdateCheck.VERSION_ANNOUNCEMENT_SIGNING_KEYS:
                         continue
-                    sig = base64.b64decode(sig)
+                    sig = base64.b64decode(sig, validate=True)
                     msg = version_num.encode('utf-8')
-                    if ecc.verify_message_with_address(address=address, sig65=sig, message=msg,
-                                                       net=constants.BitcoinMainnet):
+                    if verify_usermessage_with_address(
+                        address=address, sig65=sig, message=msg,
+                        net=constants.BitcoinMainnet
+                    ):
                         self.logger.info(f"valid sig for version announcement '{version_num}' from address '{address}'")
                         break
                 else:
@@ -134,10 +137,17 @@ class UpdateCheckThread(QThread, Logger):
         if not self.network:
             self.failed.emit()
             return
+        self._fut = asyncio.run_coroutine_threadsafe(self.get_update_info(), self.network.asyncio_loop)
         try:
-            update_info = asyncio.run_coroutine_threadsafe(self.get_update_info(), self.network.asyncio_loop).result()
+            update_info = self._fut.result()
         except Exception as e:
             self.logger.info(f"got exception: '{repr(e)}'")
             self.failed.emit()
         else:
             self.checked.emit(update_info)
+
+    def stop(self):
+        if self._fut:
+            self._fut.cancel()
+        self.exit()
+        self.wait()

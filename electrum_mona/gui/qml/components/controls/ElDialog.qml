@@ -1,0 +1,125 @@
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls
+import QtQuick.Controls.Material
+
+Dialog {
+    id: abstractdialog
+
+    property bool allowClose: true
+    property string iconSource
+    property bool resizeWithKeyboard: true
+    // inheriting classes can set needsSystemBarPadding this false to disable padding
+    property bool needsSystemBarPadding: true
+
+    property bool _result: false
+    // workaround: remember opened state, to inhibit closed -> closed event
+    property bool _wasOpened: false
+
+    // Add bottom padding for Android navigation bar if needed
+    bottomPadding: needsSystemBarPadding && app.keyboardFreeZone.state != 'visible' ? app.navigationBarHeight : 0
+
+    // called to finally close dialog after checks by onClosing handler in main.qml
+    function doClose() {
+        doReject()
+    }
+
+    // avoid potential multiple signals, only emit once
+    function doAccept() {
+        if (_result)
+            return
+        _result = true
+        accept()
+    }
+
+    // avoid potential multiple signals, only emit once
+    function doReject() {
+        if (_result)
+            return
+        _result = true
+        reject()
+    }
+
+    parent: resizeWithKeyboard ? app.keyboardFreeZone : Overlay.overlay
+    modal: true
+    Overlay.modal: Rectangle {
+        color: "#aa000000"
+    }
+
+    closePolicy: allowClose
+        ? Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        : Popup.NoAutoClose
+
+    TapHandler {  // close keyboard when tapping on the empty background
+        parent: abstractdialog.background
+        onTapped: {
+            // Release input focus so tapping the same field opens the keyboard again.
+            abstractdialog.contentItem.forceActiveFocus(Qt.MouseFocusReason)
+            Qt.inputMethod.hide()
+        }
+    }
+
+    onOpenedChanged: {
+        if (opened) {
+            app.activeDialogs.push(abstractdialog)
+            _wasOpened = true
+            _result = false
+        } else {
+            if (!_wasOpened)
+                return
+            if (app.activeDialogs.indexOf(abstractdialog) < 0) {
+                console.log('dialog should exist in activeDialogs!')
+                app.activeDialogs.pop()
+                return
+            }
+            app.activeDialogs.splice(app.activeDialogs.indexOf(abstractdialog),1)
+        }
+    }
+
+    header: ColumnLayout {
+        spacing: 0
+
+        // Add top padding for status bar on Android when using edge-to-edge
+        Item {
+            visible: needsSystemBarPadding && app.statusBarHeight > 0
+            Layout.fillWidth: true
+            Layout.preferredHeight: app.statusBarHeight
+        }
+
+        RowLayout {
+            spacing: 0
+
+            Image {
+                visible: iconSource
+                source: iconSource
+                Layout.preferredWidth: constants.iconSizeXLarge
+                Layout.preferredHeight: constants.iconSizeXLarge
+                Layout.leftMargin: constants.paddingMedium
+                Layout.topMargin: constants.paddingMedium
+                Layout.bottomMargin: constants.paddingMedium
+            }
+
+            Label {
+                text: title
+                wrapMode: Text.Wrap
+                elide: Label.ElideRight
+                Layout.fillWidth: true
+                leftPadding: constants.paddingXLarge
+                topPadding: constants.paddingXLarge
+                bottomPadding: constants.paddingXLarge
+                rightPadding: constants.paddingXLarge
+                font.bold: true
+                font.pixelSize: constants.fontSizeMedium
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.leftMargin: constants.paddingSmall
+            Layout.rightMargin: constants.paddingSmall
+            Layout.preferredHeight: 2
+            color: constants.darkerDialogBackground
+        }
+    }
+
+}

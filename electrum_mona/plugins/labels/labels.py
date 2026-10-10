@@ -1,12 +1,35 @@
+#!/usr/bin/env python
+#
+# Electrum - lightweight Bitcoin client
+# Copyright (C) 2025 The Electrum Developers
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 import asyncio
 import hashlib
 import json
-import sys
-import traceback
 from typing import Union, TYPE_CHECKING
 
 import base64
 
+from electrum_mona import util
 from electrum_mona.plugin import BasePlugin, hook
 from electrum_mona.crypto import aes_encrypt_with_iv, aes_decrypt_with_iv
 from electrum_mona.i18n import _
@@ -39,11 +62,12 @@ class LabelsPlugin(BasePlugin):
     def encode(self, wallet: 'Abstract_Wallet', msg: str) -> str:
         password, iv, wallet_id = self.wallets[wallet]
         encrypted = aes_encrypt_with_iv(password, iv, msg.encode('utf8'))
+        # FIXME: ^ we are reusing the IV between all labels in the wallet, in CBC mode...
         return base64.b64encode(encrypted).decode()
 
     def decode(self, wallet: 'Abstract_Wallet', message: str) -> str:
         password, iv, wallet_id = self.wallets[wallet]
-        decoded = base64.b64decode(message)
+        decoded = base64.b64decode(message, validate=True)
         decrypted = aes_decrypt_with_iv(password, iv, decoded)
         return decrypted.decode('utf8')
 
@@ -65,12 +89,19 @@ class LabelsPlugin(BasePlugin):
             return
         if not item:
             return
+        if label is None:
+            # note: the server should not know whether a label is empty
+            #       FIXME but it does! we are reusing the IV with AES-CBC: there is no randomness between labels,
+            #       all empty labels in given wallet look the same.
+            label = ''
         nonce = self.get_nonce(wallet)
         wallet_id = self.wallets[wallet][2]
-        bundle = {"walletId": wallet_id,
-                  "walletNonce": nonce,
-                  "externalId": self.encode(wallet, item),
-                  "encryptedLabel": self.encode(wallet, label)}
+        bundle = {
+            "walletId": wallet_id,
+            "walletNonce": nonce,
+            "externalId": self.encode(wallet, item),
+            "encryptedLabel": self.encode(wallet, label)
+        }
         asyncio.run_coroutine_threadsafe(self.do_post_safe("/label", bundle), wallet.network.asyncio_loop)
         # Caller will write the wallet
         self.set_nonce(wallet, nonce + 1)
@@ -99,7 +130,7 @@ class LabelsPlugin(BasePlugin):
                 except Exception as e:
                     raise Exception('Could not decode: ' + await result.text()) from e
 
-    async def push_thread(self, wallet: 'Abstract_Wallet'):
+    async def push_thread(self, wallet: 'Abstract_Wallet') -> int:
         wallet_data = self.wallets.get(wallet, None)
         if not wallet_data:
             raise Exception('Wallet {} not loaded'.format(wallet))
@@ -111,14 +142,15 @@ class LabelsPlugin(BasePlugin):
             try:
                 encoded_key = self.encode(wallet, key)
                 encoded_value = self.encode(wallet, value)
-            except:
+            except Exception:
                 self.logger.info(f'cannot encode {repr(key)} {repr(value)}')
                 continue
             bundle["labels"].append({'encryptedLabel': encoded_value,
                                      'externalId': encoded_key})
         await self.do_post("/labels", bundle)
+        return len(bundle['labels'])
 
-    async def pull_thread(self, wallet: 'Abstract_Wallet', force: bool):
+    async def pull_thread(self, wallet: 'Abstract_Wallet', force: bool) -> int:
         wallet_data = self.wallets.get(wallet, None)
         if not wallet_data:
             raise Exception('Wallet {} not loaded'.format(wallet))
@@ -129,34 +161,37 @@ class LabelsPlugin(BasePlugin):
             response = await self.do_get("/labels/since/%d/for/%s" % (nonce, wallet_id))
         except Exception as e:
             raise ErrorConnectingServer(e) from e
-        if response["labels"] is None:
+        if response["labels"] is None or len(response["labels"]) == 0:
             self.logger.info('no new labels')
-            return
+            return 0
+
+        self.logger.info(f'received {len(response["labels"])} labels')
         result = {}
         for label in response["labels"]:
             try:
                 key = self.decode(wallet, label["externalId"])
                 value = self.decode(wallet, label["encryptedLabel"])
-            except:
+            except Exception:
                 continue
             try:
                 json.dumps(key)
                 json.dumps(value)
-            except:
+            except Exception:
                 self.logger.info(f'error: no json {key}')
                 continue
-            result[key] = value
+            if value:
+                result[key] = value
 
         for key, value in result.items():
-            if force or not wallet.get_label(key):
-                wallet._set_label(key, value)
+            wallet._set_label(key, value)
 
-        self.logger.info(f"received {len(response)} labels")
         self.set_nonce(wallet, response["nonce"] + 1)
+        util.trigger_callback('labels_received', wallet, result)
         self.on_pulled(wallet)
+        return len(result)
 
     def on_pulled(self, wallet: 'Abstract_Wallet') -> None:
-        raise NotImplementedError()
+        pass
 
     @ignore_exceptions
     @log_exceptions
@@ -167,15 +202,22 @@ class LabelsPlugin(BasePlugin):
             self.logger.info(repr(e))
 
     def pull(self, wallet: 'Abstract_Wallet', force: bool):
-        if not wallet.network: raise Exception(_('You are offline.'))
+        if not wallet.network:
+            raise Exception(_('You are offline.'))
         return asyncio.run_coroutine_threadsafe(self.pull_thread(wallet, force), wallet.network.asyncio_loop).result()
 
     def push(self, wallet: 'Abstract_Wallet'):
-        if not wallet.network: raise Exception(_('You are offline.'))
+        if not wallet.network:
+            raise Exception(_('You are offline.'))
         return asyncio.run_coroutine_threadsafe(self.push_thread(wallet), wallet.network.asyncio_loop).result()
 
     def start_wallet(self, wallet: 'Abstract_Wallet'):
-        if not wallet.network: return  # 'offline' mode
+        """Labels have the same level of privacy as the wallet transaction
+        history. Since the wallet master public key(s) give access to
+        the transaction history, we also use it to encrypt labels.
+        """
+        if not wallet.network:
+            return  # 'offline' mode
         mpk = wallet.get_fingerprint()
         if not mpk:
             return

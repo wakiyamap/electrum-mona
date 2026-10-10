@@ -1,8 +1,9 @@
 from electrum_mona.plugin import hook
 from electrum_mona.i18n import _
 from electrum_mona.util import print_stderr
+from electrum_mona.hw_wallet import CmdLineHandler
+
 from .trezor import TrezorPlugin, PASSPHRASE_ON_DEVICE
-from ..hw_wallet import CmdLineHandler
 
 class TrezorCmdLineHandler(CmdLineHandler):
     def __init__(self):

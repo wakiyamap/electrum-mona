@@ -1,11 +1,12 @@
 # loosely based on
 # http://trevorius.com/scrapbook/uncategorized/pyqt-custom-abstractitemmodel/
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore
+
 
 class CustomNode:
 
-    def __init__(self, model, data):
+    def __init__(self, model: 'CustomModel', data):
         self.model = model
         self._data = data
         self._children = []
@@ -38,7 +39,6 @@ class CustomNode:
         self._children.append(child)
 
 
-
 class CustomModel(QtCore.QAbstractItemModel):
 
     def __init__(self, parent, columncount):
@@ -62,12 +62,18 @@ class CustomModel(QtCore.QAbstractItemModel):
         parent.addChild(self, node)
 
     def index(self, row, column, _parent=None):
+        # Performance-critical function
+
         if not _parent or not _parent.isValid():
             parent = self._root
         else:
             parent = _parent.internalPointer()
 
-        if not QtCore.QAbstractItemModel.hasIndex(self, row, column, _parent):
+        # Open-coded
+        #   if not QtCore.QAbstractItemModel.hasIndex(self, row, column, _parent):
+        # the implementation is equivalent but it's in C++,
+        # so VM entries take up inordinate amounts of time (up to 25% of refresh()):
+        if row < 0 or column < 0 or row >= self.rowCount(_parent) or column >= self._columncount:
             return QtCore.QModelIndex()
 
         child = parent.child(row)

@@ -26,13 +26,12 @@ from typing import Sequence, Optional, TYPE_CHECKING
 
 import aiorpcx
 
-from .util import bh2u, TxMinedInfo, NetworkJobOnDefaultServer
+from .util import TxMinedInfo, NetworkJobOnDefaultServer
 from .crypto import sha256d
 from .bitcoin import hash_decode, hash_encode
 from .transaction import Transaction
 from .blockchain import hash_header
 from .interface import GracefulDisconnect
-from .network import UntrustedServerReturnedError
 from . import constants
 
 if TYPE_CHECKING:
@@ -44,6 +43,7 @@ class MerkleVerificationFailure(Exception): pass
 class MissingBlockHeader(MerkleVerificationFailure): pass
 class MerkleRootMismatch(MerkleVerificationFailure): pass
 class InnerNodeOfSpvProofIsValidTx(MerkleVerificationFailure): pass
+class LeftSiblingDuplicate(MerkleVerificationFailure): pass
 
 
 class SPV(NetworkJobOnDefaultServer):
@@ -82,13 +82,14 @@ class SPV(NetworkJobOnDefaultServer):
             if tx_hash in self.requested_merkle or tx_hash in self.merkle_roots:
                 continue
             # or before headers are available
-            if tx_height <= 0 or tx_height > local_height:
+            if not (0 < tx_height <= local_height):
                 continue
             # if it's in the checkpoint region, we still might not have the header
             header = self.blockchain.read_header(tx_height)
             if header is None:
-                if tx_height < constants.net.max_checkpoint():
-                    await self.taskgroup.spawn(self.network.request_chunk(tx_height, None, can_return_early=True))
+                if tx_height <= constants.net.max_checkpoint():
+                    # FIXME these requests are not counted (self._requests_sent += 1)
+                    await self.taskgroup.spawn(self.interface.request_chunk_below_max_checkpoint(height=tx_height))
                 continue
             # request now
             self.logger.info(f'requested merkle {tx_hash}')
@@ -97,15 +98,16 @@ class SPV(NetworkJobOnDefaultServer):
 
     async def _request_and_verify_single_proof(self, tx_hash, tx_height):
         try:
+            self._requests_sent += 1
             async with self._network_request_semaphore:
-                merkle = await self.network.get_merkle_for_transaction(tx_hash, tx_height)
-        except UntrustedServerReturnedError as e:
-            if not isinstance(e.original_exception, aiorpcx.jsonrpc.RPCError):
-                raise
+                merkle = await self.interface.get_merkle_for_transaction(tx_hash, tx_height)
+        except aiorpcx.jsonrpc.RPCError:
             self.logger.info(f'tx {tx_hash} not at height {tx_height}')
             self.wallet.remove_unverified_tx(tx_hash, tx_height)
             self.requested_merkle.discard(tx_hash)
             return
+        finally:
+            self._requests_answered += 1
         # Verify the hash of the server-provided merkle branch to a
         # transaction matches the merkle root of its block
         if tx_height != merkle.get('block_height'):
@@ -120,7 +122,7 @@ class SPV(NetworkJobOnDefaultServer):
         try:
             verify_tx_is_in_block(tx_hash, merkle_branch, pos, header, tx_height)
         except MerkleVerificationFailure as e:
-            if self.network.config.get("skipmerklecheck"):
+            if self.network.config.NETWORK_SKIPMERKLECHECK:
                 self.logger.info(f"skipping merkle proof check {tx_hash}")
             else:
                 self.logger.info(repr(e))
@@ -130,7 +132,7 @@ class SPV(NetworkJobOnDefaultServer):
         self.requested_merkle.discard(tx_hash)
         self.logger.info(f"verified {tx_hash}")
         header_hash = hash_header(header)
-        tx_info = TxMinedInfo(height=tx_height,
+        tx_info = TxMinedInfo(_height=tx_height,
                               timestamp=header.get('timestamp'),
                               txpos=pos,
                               header_hash=header_hash)
@@ -148,11 +150,16 @@ class SPV(NetworkJobOnDefaultServer):
         if leaf_pos_in_tree < 0:
             raise MerkleVerificationFailure('leaf_pos_in_tree must be non-negative')
         index = leaf_pos_in_tree
-        for item in merkle_branch_bytes:
-            if len(item) != 32:
-                raise MerkleVerificationFailure('all merkle branch items have to 32 bytes long')
-            inner_node = (item + h) if (index & 1) else (h + item)
-            cls._raise_if_valid_tx(bh2u(inner_node))
+        for sibling in merkle_branch_bytes:
+            if len(sibling) != 32:
+                raise MerkleVerificationFailure('all merkle branch items have to be 32 bytes long')
+            is_right_child = (index & 1)
+            inner_node = (sibling + h) if is_right_child else (h + sibling)
+            # CVE-2017-12842 protection: inner node must not be a valid tx
+            cls._raise_if_valid_tx(inner_node.hex())
+            # CVE-2012-2459 protection: reject left-sibling duplicates
+            if is_right_child and sibling == h:
+                raise LeftSiblingDuplicate()
             h = sha256d(inner_node)
             index >>= 1
         if index != 0:
@@ -161,14 +168,14 @@ class SPV(NetworkJobOnDefaultServer):
 
     @classmethod
     def _raise_if_valid_tx(cls, raw_tx: str):
-        # If an inner node of the merkle proof is also a valid tx, chances are, this is an attack.
+        # CVE-2017-12842: If an inner node of the merkle proof is also a valid tx, chances are, this is an attack.
         # https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-June/016105.html
         # https://lists.linuxfoundation.org/pipermail/bitcoin-dev/attachments/20180609/9f4f5b1f/attachment-0001.pdf
         # https://bitcoin.stackexchange.com/questions/76121/how-is-the-leaf-node-weakness-in-merkle-trees-exploitable/76122#76122
         tx = Transaction(raw_tx)
         try:
             tx.deserialize()
-        except:
+        except Exception:
             pass
         else:
             raise InnerNodeOfSpvProofIsValidTx()
@@ -190,7 +197,8 @@ class SPV(NetworkJobOnDefaultServer):
         self.requested_merkle.discard(tx_hash)
 
     def is_up_to_date(self):
-        return not self.requested_merkle
+        return (not self.requested_merkle
+                and not self.wallet.unverified_tx)
 
 
 def verify_tx_is_in_block(tx_hash: str, merkle_branch: Sequence[str],

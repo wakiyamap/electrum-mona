@@ -19,7 +19,7 @@
   OutFile "dist/electrum-mona-setup.exe"
 
   ;Default installation folder
-  InstallDir "$PROGRAMFILES\${PRODUCT_NAME}"
+  InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 
   ;Get installation folder from registry if available
   InstallDirRegKey HKCU "Software\${PRODUCT_NAME}" ""
@@ -71,7 +71,8 @@
 
   !define MUI_ABORTWARNING
   !define MUI_ABORTWARNING_TEXT "Are you sure you wish to abort the installation of ${PRODUCT_NAME}?"
-  !define MUI_ICON "c:\electrum-mona\electrum_mona\gui\icons\electrum.ico"
+
+  !define MUI_ICON "..\..\electrum_mona\gui\icons\electrum.ico"
 
 ;--------------------------------
 ;Pages
@@ -87,6 +88,55 @@
   !insertmacro MUI_LANGUAGE "English"
 
 ;--------------------------------
+;Functions
+
+!macro CreateEnsureNotRunning prefix operation
+
+Function ${prefix}EnsureNotRunning
+  ; pop the directory to check from the stack into $R0
+  Pop $R0
+  ; if the dir at $R0 doesn't exist, jump to nodir
+  IfFileExists "$R0" 0 nodir
+    ; Find all .exe files in the directory, $1 is the handle, $2 is the filename
+    FindFirst $1 $2 "$R0\*.exe"
+    IfErrors noexe 0
+
+    checkloop:
+    ; Skip checking the uninstaller if we are the uninstaller to avoid locking the uninstaller itself
+    !if "${prefix}" == "un."
+        StrCmp $2 "Uninstall.exe" skipfile 0
+    !endif
+
+    ; Check if we can append to the .exe file. If we can't that means it is still running.
+    retryopen:
+    FileOpen $0 "$R0\$2" a
+    IfErrors 0 closeexe
+      MessageBox MB_RETRYCANCEL "Can not ${operation} because $2 is still running. Close it and retry." /SD IDCANCEL IDRETRY retryopen
+      FindClose $1
+      Abort
+    closeexe:
+    FileClose $0
+
+    skipfile:
+    ; Find next .exe file
+    FindNext $1 $2
+    IfErrors done 0
+    Goto checkloop
+
+    done:
+    FindClose $1
+
+  noexe:
+  nodir:
+FunctionEnd
+
+!macroend
+
+; The function has to be created twice, once for the installer and once for the uninstaller
+!insertmacro CreateEnsureNotRunning "" "install"
+!insertmacro CreateEnsureNotRunning "un." "uninstall"
+
+;--------------------------------
 ;Installer Sections
 
 ;Check if we have Administrator rights
@@ -98,6 +148,14 @@ Function .onInit
 		SetErrorLevel 740 ;ERROR_ELEVATION_REQUIRED
 		Quit
 	${EndIf}
+
+  ; Check if already installed and ensure the process is not running if it is
+  ReadRegStr $R0 HKCU "Software\${PRODUCT_NAME}" ""
+  IfErrors noinstdir 0
+    Push $R0
+    Call EnsureNotRunning
+  noinstdir:
+  ClearErrors
 FunctionEnd
 
 Section
@@ -109,8 +167,8 @@ Section
   Delete "$SMPROGRAMS\${PRODUCT_NAME}\*.*"
 
   ;Files to pack into the installer
-  File /r "dist\electrum-mona\*.*"
-  File "c:\electrum-mona\electrum_mona\gui\icons\electrum.ico"
+  File /r "dist\electrum_mona\*.*"
+  File "..\..\electrum_mona\gui\icons\electrum.ico"
 
   ;Store installation folder
   WriteRegStr HKCU "Software\${PRODUCT_NAME}" "" $INSTDIR
@@ -131,8 +189,8 @@ Section
   ;CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME} Testnet.lnk" "$INSTDIR\electrum-mona-${PRODUCT_VERSION}.exe" "--testnet" "$INSTDIR\electrum-mona-${PRODUCT_VERSION}.exe" 0
 
 
-  ;Links monacoin: and lightning: URIs to Electrum
-  WriteRegStr HKCU "Software\Classes\monacoin" "" "URL:bitcoin Protocol"
+  ;Links monacoin: URIs to Electrum
+  WriteRegStr HKCU "Software\Classes\monacoin" "" "URL:monacoin Protocol"
   WriteRegStr HKCU "Software\Classes\monacoin" "URL Protocol" ""
   WriteRegStr HKCU "Software\Classes\monacoin" "DefaultIcon" "$\"$INSTDIR\electrum.ico, 0$\""
   WriteRegStr HKCU "Software\Classes\monacoin\shell\open\command" "" "$\"$INSTDIR\electrum-mona-${PRODUCT_VERSION}.exe$\" $\"%1$\""
@@ -140,6 +198,14 @@ Section
   ;WriteRegStr HKCU "Software\Classes\lightning" "URL Protocol" ""
   ;WriteRegStr HKCU "Software\Classes\lightning" "DefaultIcon" "$\"$INSTDIR\electrum.ico, 0$\""
   ;WriteRegStr HKCU "Software\Classes\lightning\shell\open\command" "" "$\"$INSTDIR\electrum-mona-${PRODUCT_VERSION}.exe$\" $\"%1$\""
+  ;WriteRegStr HKCU "Software\Classes\lnurlp" "" "URL:lnurlp Protocol"
+  ;WriteRegStr HKCU "Software\Classes\lnurlp" "URL Protocol" ""
+  ;WriteRegStr HKCU "Software\Classes\lnurlp" "DefaultIcon" "$\"$INSTDIR\electrum.ico, 0$\""
+  ;WriteRegStr HKCU "Software\Classes\lnurlp\shell\open\command" "" "$\"$INSTDIR\electrum-mona-${PRODUCT_VERSION}.exe$\" $\"%1$\""
+  ;WriteRegStr HKCU "Software\Classes\lnurlw" "" "URL:lnurlw Protocol"
+  ;WriteRegStr HKCU "Software\Classes\lnurlw" "URL Protocol" ""
+  ;WriteRegStr HKCU "Software\Classes\lnurlw" "DefaultIcon" "$\"$INSTDIR\electrum.ico, 0$\""
+  ;WriteRegStr HKCU "Software\Classes\lnurlw\shell\open\command" "" "$\"$INSTDIR\electrum-mona-${PRODUCT_VERSION}.exe$\" $\"%1$\""
 
   ;Adds an uninstaller possibility to Windows Uninstall or change a program section
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayName" "$(^Name)"
@@ -171,6 +237,15 @@ Section "Uninstall"
   RMDir  "$SMPROGRAMS\${PRODUCT_NAME}"
 
   DeleteRegKey HKCU "Software\Classes\monacoin"
+  ;DeleteRegKey HKCU "Software\Classes\lightning"
+  ;DeleteRegKey HKCU "Software\Classes\lnurlp"
+  ;DeleteRegKey HKCU "Software\Classes\lnurlw"
   DeleteRegKey HKCU "Software\${PRODUCT_NAME}"
   DeleteRegKey HKCU "${PRODUCT_UNINST_KEY}"
 SectionEnd
+
+Function UN.onInit
+  ; Ensure the process is not running in the uninstallation directory
+  Push $INSTDIR
+  Call un.EnsureNotRunning
+FunctionEnd

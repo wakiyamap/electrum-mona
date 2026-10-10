@@ -2,14 +2,18 @@ import time
 from struct import pack
 from typing import Optional
 
-from electrum_mona import ecc
+import electrum_ecc as ecc
+
 from electrum_mona.i18n import _
 from electrum_mona.util import UserCancelled
 from electrum_mona.keystore import bip39_normalize_passphrase
-from electrum_mona.bip32 import BIP32Node, convert_bip32_path_to_list_of_uint32
+from electrum_mona.bip32 import BIP32Node, convert_bip32_strpath_to_intpath
 from electrum_mona.logging import Logger
 from electrum_mona.plugin import runs_in_hwd_thread
-from electrum_mona.plugins.hw_wallet.plugin import HardwareClientBase, HardwareHandlerBase
+from electrum_mona.hw_wallet.plugin import HardwareClientBase, HardwareHandlerBase
+
+
+DEPRECATION_WARNING_SHOWN = False
 
 
 class GuiMixin(object):
@@ -117,6 +121,9 @@ class SafeTClientBase(HardwareClientBase, GuiMixin, Logger):
         Logger.__init__(self)
         self.used()
 
+    def device_model_name(self) -> Optional[str]:
+        return 'Safe-T'
+
     def __str__(self):
         return "%s/%s" % (self.label(), self.features.device_id)
 
@@ -156,7 +163,7 @@ class SafeTClientBase(HardwareClientBase, GuiMixin, Logger):
 
     @staticmethod
     def expand_path(n):
-        return convert_bip32_path_to_list_of_uint32(n)
+        return convert_bip32_strpath_to_intpath(n)
 
     @runs_in_hwd_thread
     def cancel(self):
@@ -171,6 +178,18 @@ class SafeTClientBase(HardwareClientBase, GuiMixin, Logger):
         address_n = self.expand_path(bip32_path)
         creating = False
         node = self.get_public_node(address_n, creating).node
+
+        deprecation_warning = (
+            "Archos Safe-T mini is being deprecated.\n\nIt is no longer supported by the manufacturer.\n"
+            "Future versions of Electrum will no longer be compatible with it.\n\n"
+            "You should move your coins and migrate to a modern hardware device.")
+        self.logger.warning(deprecation_warning.replace("\n", " "))
+
+        global DEPRECATION_WARNING_SHOWN
+        if self.handler and not DEPRECATION_WARNING_SHOWN:
+            DEPRECATION_WARNING_SHOWN = True
+            self.handler.show_warning(deprecation_warning, blocking=True)
+
         return BIP32Node(xtype=xtype,
                          eckey=ecc.ECPubkey(node.public_key),
                          chaincode=node.chain_code,

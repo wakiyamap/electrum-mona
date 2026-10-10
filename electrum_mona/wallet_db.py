@@ -22,88 +22,131 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-import os
-import ast
+import datetime
 import json
 import copy
-import threading
 from collections import defaultdict
-from typing import Dict, Optional, List, Tuple, Set, Iterable, NamedTuple, Sequence, TYPE_CHECKING, Union
-import binascii
+from typing import (Dict, Optional, List, Tuple, Set, Iterable, NamedTuple, Sequence, TYPE_CHECKING,
+                    Union, AbstractSet)
+import time
+from functools import partial
 
-from . import util, bitcoin
-from .util import profiler, WalletFileException, multisig_type, TxMinedInfo, bfh
-from .invoices import Invoice
+import attr
+
+from . import bitcoin
+from . import constants
+from .util import profiler, WalletFileException, multisig_type, TxMinedInfo, MyEncoder, bfh
 from .keystore import bip44_derivation
-from .transaction import Transaction, TxOutpoint, tx_from_any, PartialTransaction, PartialTxOutput
+from .transaction import (Transaction, TxOutpoint, tx_from_any, PartialTransaction, PartialTxOutput, BadHeaderMagic,
+                          BCDataStream)
 from .logging import Logger
-from .lnutil import LOCAL, REMOTE, FeeUpdate, UpdateAddHtlc, LocalConfig, RemoteConfig, ChannelType
-from .lnutil import ImportedChannelBackupStorage, OnchainChannelBackupStorage
-from .lnutil import ChannelConstraints, Outpoint, ShachainElement
-from .json_db import StoredDict, JsonDB, locked, modifier
+
+from .lnutil import HTLCOwner, ChannelType, RecvMPPResolution
+from .json_db import JsonDB, locked, modifier
+from . import stored_dict
+from .stored_dict import StoredObject, stored_at, register_key, register_name
 from .plugin import run_hook, plugin_loaders
-from .paymentrequest import PaymentRequest
-from .submarine_swaps import SwapData
+from .version import ELECTRUM_VERSION
+from .i18n import _
 
 if TYPE_CHECKING:
     from .storage import WalletStorage
 
 
-# seed_version is now used for the version of the wallet file
+class WalletRequiresUpgrade(WalletFileException):
+    pass
 
+
+class WalletRequiresSplit(WalletFileException):
+    def __init__(self, split_data):
+        super().__init__()
+        self._split_data = split_data
+
+
+class WalletUnfinished(WalletFileException):
+    def __init__(self, wallet_db: 'WalletDB'):
+        super().__init__()
+        self._wallet_db = wallet_db
+
+
+# seed_version is now used for the version of the wallet file
 OLD_SEED_VERSION = 4        # electrum versions < 2.0
 NEW_SEED_VERSION = 11       # electrum versions >= 2.0
-FINAL_SEED_VERSION = 44     # electrum >= 2.7 will set this to prevent
+FINAL_SEED_VERSION = 72     # electrum >= 2.7 will set this to prevent
                             # old versions from overwriting new format
 
 
+@stored_at('/tx_fees/*', tuple)
 class TxFeesValue(NamedTuple):
     fee: Optional[int] = None
     is_calculated_by_us: bool = False
     num_inputs: Optional[int] = None
 
 
-class WalletDB(JsonDB):
+@stored_at('/db_metadata')
+@attr.s
+class DBMetadata(StoredObject):
+    creation_timestamp = attr.ib(default=None, type=int)
+    first_electrum_version_used = attr.ib(default=None, type=str)
 
-    def __init__(self, raw, *, manual_upgrades: bool):
-        JsonDB.__init__(self, {})
-        self._manual_upgrades = manual_upgrades
-        self._called_after_upgrade_tasks = False
-        if raw:  # loading existing db
-            self.load_data(raw)
-            self.load_plugins()
-        else:  # creating new db
-            self.put('seed_version', FINAL_SEED_VERSION)
-            self._after_upgrade_tasks()
+    def to_str(self) -> str:
+        ts = self.creation_timestamp
+        ver = self.first_electrum_version_used
+        if ts is None or ver is None:
+            return "unknown"
+        date_str = datetime.date.fromtimestamp(ts).isoformat()
+        return f"using {ver}, on {date_str}"
 
-    def load_data(self, s):
-        try:
-            self.data = json.loads(s)
-        except:
-            try:
-                d = ast.literal_eval(s)
-                labels = d.get('labels', {})
-            except Exception as e:
-                raise WalletFileException("Cannot read wallet file. (parsing failed)")
-            self.data = {}
-            for key, value in d.items():
-                try:
-                    json.dumps(key)
-                    json.dumps(value)
-                except:
-                    self.logger.info(f'Failed to convert label to json format: {key}')
-                    continue
-                self.data[key] = value
-        if not isinstance(self.data, dict):
-            raise WalletFileException("Malformed wallet file (not dict)")
 
-        if not self._manual_upgrades and self.requires_split():
-            raise WalletFileException("This wallet has multiple accounts and must be split")
+# note: subclassing WalletFileException for some specific cases
+#       allows the crash reporter to distinguish them and open
+#       separate tracking issues
+class WalletFileExceptionVersion51(WalletFileException): pass
 
-        if not self.requires_upgrade():
-            self._after_upgrade_tasks()
-        elif not self._manual_upgrades:
-            self.upgrade()
+
+# register dicts that require value conversions not handled by constructor
+register_name('/transactions/*', None, lambda x: tx_from_any(x, deserialize=False, sanitize=False))
+register_name('/channels/*/data_loss_protect_remote_pcp/*', None, lambda x: bytes.fromhex(x))
+register_name('/channels/*/onion_keys/*', None, lambda x: bytes.fromhex(x))
+# register tuples, otherwise they will default to StoredList
+register_name('/contacts/*', None, tuple)
+register_name('/lightning_preimages/*', None, tuple)
+# register dicts that require key conversion
+for key in [
+        '/channels/*/log/*/adds',
+        '/channels/*/log/*/locked_in',
+        '/channels/*/log/*/settles',
+        '/channels/*/log/*/fails',
+        '/channels/*/log/*/fee_updates',
+        '/channels/*/revocation_store/buckets',
+        '/channels/*/log/*/unacked_updates',
+        '/channels/*/unfulfilled_htlcs',
+        '/channels/*/onion_keys']:
+    register_key(key, int)
+for key in [
+        '/channels/*/log',
+        '/channels/*/log/*/locked_in/*',
+        '/channels/*/log/*/fails/*',
+        '/channels/*/log/*/settles/*']:
+    register_key(key, lambda x: HTLCOwner(int(x)))
+
+
+class WalletDBUpgrader(Logger):
+    def __init__(self, data: dict):
+        Logger.__init__(self)
+        self.data = data
+        # self.data must be in-memory dict (not a StoredDict or similar),
+        # so a failed, partial upgrade won't get commited to disk
+        assert type(self.data) == dict, type(self.data)
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def put(self, key, value):
+        if value is not None:
+            self.data[key] = value
+        else:
+            self.data.pop(key, None)
 
     def requires_split(self):
         d = self.get('accounts', {})
@@ -130,7 +173,8 @@ class WalletDB(JsonDB):
             data2['suffix'] = 'imported'
             result = [data1, data2]
 
-        elif wallet_type in ['bip44', 'trezor', 'keepkey', 'ledger', 'btchip', 'digitalbitbox', 'safe_t']:
+        # note: do not add new hardware types here, this code is for converting legacy wallets
+        elif wallet_type in ['bip44', 'trezor', 'keepkey', 'ledger', 'btchip']:
             mpk = self.get('master_public_keys')
             for k in d.keys():
                 i = int(k)
@@ -146,7 +190,7 @@ class WalletDB(JsonDB):
                 new_data['suffix'] = k
                 result.append(new_data)
         else:
-            raise WalletFileException("This wallet has multiple accounts and must be split")
+            raise WalletFileException(f'Unsupported wallet type for split: {wallet_type}')
         return result
 
     def requires_upgrade(self):
@@ -155,9 +199,6 @@ class WalletDB(JsonDB):
     @profiler
     def upgrade(self):
         self.logger.info('upgrading wallet format')
-        if self._called_after_upgrade_tasks:
-            # we need strict ordering between upgrade() and after_upgrade_tasks()
-            raise Exception("'after_upgrade_tasks' must NOT be called before 'upgrade'")
         self._convert_imported()
         self._convert_wallet_type()
         self._convert_account()
@@ -193,13 +234,35 @@ class WalletDB(JsonDB):
         self._convert_version_42()
         self._convert_version_43()
         self._convert_version_44()
+        self._convert_version_45()
+        self._convert_version_46()
+        self._convert_version_47()
+        self._convert_version_48()
+        self._convert_version_49()
+        self._convert_version_50()
+        self._convert_version_51()
+        self._convert_version_52()
+        self._convert_version_53()
+        self._convert_version_54()
+        self._convert_version_55()
+        self._convert_version_56()
+        self._convert_version_57()
+        self._convert_version_58()
+        self._convert_version_59()
+        self._convert_version_60()
+        self._convert_version_61()
+        self._convert_version_62()
+        self._convert_version_63()
+        self._convert_version_64()
+        self._convert_version_65()
+        self._convert_version_66()
+        self._convert_version_67()
+        self._convert_version_68()
+        self._convert_version_69()
+        self._convert_version_70()
+        self._convert_version_71()
+        self._convert_version_72()
         self.put('seed_version', FINAL_SEED_VERSION)  # just to be sure
-
-        self._after_upgrade_tasks()
-
-    def _after_upgrade_tasks(self):
-        self._called_after_upgrade_tasks = True
-        self._load_transactions()
 
     def _convert_wallet_type(self):
         if not self._is_upgrade_method_needed(0, 13):
@@ -257,7 +320,8 @@ class WalletDB(JsonDB):
             self.put('wallet_type', 'standard')
             self.put('keystore', d)
 
-        elif wallet_type in ['trezor', 'keepkey', 'ledger', 'digitalbitbox', 'safe_t']:
+        # note: do not add new hardware types here, this code is for converting legacy wallets
+        elif wallet_type in ['trezor', 'keepkey', 'ledger']:
             xpub = xpubs["x/0'"]
             derivation = self.get('derivation', bip44_derivation(0))
             d = {
@@ -486,7 +550,7 @@ class WalletDB(JsonDB):
             tx = Transaction(raw_tx)
             for idx, txout in enumerate(tx.outputs()):
                 outpoint = f"{txid}:{idx}"
-                scripthash = script_to_scripthash(txout.scriptpubkey.hex())
+                scripthash = script_to_scripthash(txout.scriptpubkey)
                 prevouts_by_scripthash[scripthash].append((outpoint, txout.value))
         self.put('prevouts_by_scripthash', prevouts_by_scripthash)
 
@@ -557,6 +621,7 @@ class WalletDB(JsonDB):
         self.data['seed_version'] = 24
 
     def _convert_version_25(self):
+        from .crypto import sha256
         if not self._is_upgrade_method_needed(24, 24):
             return
         # add 'type' field to onchain requests
@@ -573,25 +638,15 @@ class WalletDB(JsonDB):
                     'time': r.get('time'),
                     'type': PR_TYPE_ONCHAIN,
                 }
-        # convert bip70 invoices
+        # delete bip70 invoices
+        # note: this upgrade was changed ~2 years after-the-fact to delete instead of converting
         invoices = self.data.get('invoices', {})
         for k, r in list(invoices.items()):
             data = r.get("hex")
-            if data:
-                pr = PaymentRequest(bytes.fromhex(data))
-                if pr.id != k:
-                    continue
-                invoices[k] = {
-                    'type': PR_TYPE_ONCHAIN,
-                    'amount': pr.get_amount(),
-                    'bip70': data,
-                    'exp': pr.get_expiration_date() - pr.get_time(),
-                    'id': pr.id,
-                    'message': pr.get_memo(),
-                    'outputs': [x.to_legacy_tuple() for x in pr.get_outputs()],
-                    'time': pr.get_time(),
-                    'requestor': pr.get_requestor(),
-                }
+            pr_id = sha256(bytes.fromhex(data))[0:16].hex()
+            if pr_id != k:
+                continue
+            del invoices[k]
         self.data['seed_version'] = 25
 
     def _convert_version_26(self):
@@ -864,6 +919,567 @@ class WalletDB(JsonDB):
             item['channel_type'] = channel_type
         self.data['seed_version'] = 44
 
+    def _convert_version_45(self):
+        from .bolt11 import decode_bolt11_invoice
+        if not self._is_upgrade_method_needed(44, 44):
+            return
+        swaps = self.data.get('submarine_swaps', {})
+        for key, item in swaps.items():
+            item['receive_address'] = None
+        # note: we set height to zero
+        # the new key for all requests is a wallet address, not done here
+        for name in ['invoices', 'payment_requests']:
+            invoices = self.data.get(name, {})
+            for key, item in invoices.items():
+                is_lightning = item['type'] == 2
+                lightning_invoice = item['invoice'] if is_lightning else None
+                outputs = item['outputs'] if not is_lightning else None
+                bip70 = item['bip70'] if not is_lightning else None
+                if is_lightning:
+                    lnaddr = decode_bolt11_invoice(item['invoice'])
+                    amount_msat = lnaddr.get_amount_msat()
+                    timestamp = lnaddr.date
+                    exp_delay = lnaddr.get_expiry()
+                    message = lnaddr.get_description()
+                    height = 0
+                else:
+                    amount_sat = item['amount_sat']
+                    amount_msat = amount_sat * 1000 if amount_sat not in [None, '!'] else amount_sat
+                    message = item['message']
+                    timestamp = item['time']
+                    exp_delay = item['exp']
+                    height = item['height']
+
+                invoices[key] = {
+                    'amount_msat':amount_msat,
+                    'message':message,
+                    'time':timestamp,
+                    'exp':exp_delay,
+                    'height':height,
+                    'outputs':outputs,
+                    'bip70':bip70,
+                    'lightning_invoice':lightning_invoice,
+                }
+        self.data['seed_version'] = 45
+
+    def _convert_invoices_keys(self, invoices):
+        # recalc keys of outgoing on-chain invoices
+        from .crypto import sha256d
+        def get_id_from_onchain_outputs(raw_outputs, timestamp):
+            outputs = [PartialTxOutput.from_legacy_tuple(*output) for output in raw_outputs]
+            outputs_str = "\n".join(f"{txout.scriptpubkey.hex()}, {txout.value}" for txout in outputs)
+            return sha256d(outputs_str + "%d" % timestamp).hex()[0:10]
+        for key, item in list(invoices.items()):
+            is_lightning = item['lightning_invoice'] is not None
+            if is_lightning:
+                continue
+            outputs_raw = item['outputs']
+            assert outputs_raw, outputs_raw
+            timestamp = item['time']
+            newkey = get_id_from_onchain_outputs(outputs_raw, timestamp)
+            if newkey != key:
+                invoices[newkey] = item
+                del invoices[key]
+
+    def _convert_version_46(self):
+        if not self._is_upgrade_method_needed(45, 45):
+            return
+        invoices = self.data.get('invoices', {})
+        self._convert_invoices_keys(invoices)
+        self.data['seed_version'] = 46
+
+    def _convert_version_47(self):
+        from .bolt11 import decode_bolt11_invoice
+        if not self._is_upgrade_method_needed(46, 46):
+            return
+        # recalc keys of requests
+        requests = self.data.get('payment_requests', {})
+        for key, item in list(requests.items()):
+            lnaddr = item.get('lightning_invoice')
+            if lnaddr:
+                lnaddr = decode_bolt11_invoice(lnaddr)
+                rhash = lnaddr.paymenthash.hex()
+                if key != rhash:
+                    requests[rhash] = item
+                    del requests[key]
+        self.data['seed_version'] = 47
+
+    def _convert_version_48(self):
+        # fix possible corruption of invoice amounts, see #7774
+        if not self._is_upgrade_method_needed(47, 47):
+            return
+        invoices = self.data.get('invoices', {})
+        for key, item in list(invoices.items()):
+            if item['amount_msat'] == 1000 * "!":
+                item['amount_msat'] = "!"
+        self.data['seed_version'] = 48
+
+    def _convert_version_49(self):
+        if not self._is_upgrade_method_needed(48, 48):
+            return
+        channels = self.data.get('channels', {})
+        legacy_chans = [chan_dict for chan_dict in channels.values()
+                        if chan_dict['channel_type'] == ChannelType.OPTION_LEGACY_CHANNEL]
+        if legacy_chans:
+            raise WalletFileException(
+                f"This wallet contains {len(legacy_chans)} lightning channels of type 'LEGACY'. "
+                f"These channels were created using unreleased development versions of Electrum "
+                f"before the first lightning-capable release of 4.0, and are not supported anymore. "
+                f"Please use Electrum 4.3.0 to open this wallet, close the channels, "
+                f"and delete them from the wallet."
+            )
+        self.data['seed_version'] = 49
+
+    def _convert_version_50(self):
+        if not self._is_upgrade_method_needed(49, 49):
+            return
+        requests = self.data.get('payment_requests', {})
+        self._convert_invoices_keys(requests)
+        self.data['seed_version'] = 50
+
+    def _convert_version_51(self):
+        from .bolt11 import decode_bolt11_invoice
+        if not self._is_upgrade_method_needed(50, 50):
+            return
+        requests = self.data.get('payment_requests', {})
+        for key, item in list(requests.items()):
+            lightning_invoice = item.pop('lightning_invoice')
+            if lightning_invoice is None:
+                payment_hash = None
+            else:
+                lnaddr = decode_bolt11_invoice(lightning_invoice)
+                payment_hash = lnaddr.paymenthash.hex()
+            item['payment_hash'] = payment_hash
+        self.data['seed_version'] = 51
+
+    def _detect_insane_version_51(self) -> int:
+        """Returns 0 if file okay,
+        error code 1: multisig wallet has old_mpk
+        error code 2: multisig wallet has mixed Ypub/Zpub
+        """
+        assert self.get('seed_version') == 51
+        xpub_type = None
+        for ks_name in ['x{}/'.format(i) for i in range(1, 16)]:  # having any such field <=> multisig wallet
+            ks = self.data.get(ks_name, None)
+            if ks is None: continue
+            ks_type = ks.get('type')
+            if ks_type == "old":
+                return 1  # error
+            assert ks_type in ("bip32", "hardware"), f"unexpected {ks_type=}"
+            xpub = ks.get('xpub') or None
+            assert xpub is not None
+            assert isinstance(xpub, str)
+            if xpub_type is None:  # first iter
+                xpub_type = xpub[0:4]
+            if xpub[0:4] != xpub_type:
+                return 2  # error
+        # looks okay
+        return 0
+
+    def _convert_version_52(self):
+        if not self._is_upgrade_method_needed(51, 51):
+            return
+        if (error_code := self._detect_insane_version_51()) != 0:
+            # should not get here; get_seed_version should have caught this
+            raise Exception(f'unsupported wallet file: version_51 with error {error_code}')
+        self.data['seed_version'] = 52
+
+    def _convert_version_53(self):
+        if not self._is_upgrade_method_needed(52, 52):
+            return
+        cbs = self.data.get('imported_channel_backups', {})
+        for channel_id, cb in list(cbs.items()):
+            if 'local_payment_pubkey' not in cb:
+                cb['local_payment_pubkey'] = None
+        self.data['seed_version'] = 53
+
+    def _convert_version_54(self):
+        # note: similar to convert_version_38
+        if not self._is_upgrade_method_needed(53, 53):
+            return
+        from .bitcoin import TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN
+        max_sats = TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN
+        requests = self.data.get('payment_requests', {})
+        invoices = self.data.get('invoices', {})
+        for d in [invoices, requests]:
+            for key, item in list(d.items()):
+                amount_msat = item['amount_msat']
+                if amount_msat == '!':
+                    continue
+                if not (isinstance(amount_msat, int) and 0 <= amount_msat <= max_sats * 1000):
+                    del d[key]
+        self.data['seed_version'] = 54
+
+    def _convert_version_55(self):
+        if not self._is_upgrade_method_needed(54, 54):
+            return
+        # do not use '/' in dict keys
+        for key in list(self.data.keys()):
+            if key.endswith('/'):
+                self.data[key[:-1]] = self.data.pop(key)
+        self.data['seed_version'] = 55
+
+    def _convert_version_56(self):
+        if not self._is_upgrade_method_needed(55, 55):
+            return
+        channels = self.data.get('channels', {})
+        for key, item in channels.items():
+            item['constraints']['flags'] = 0
+            for c in ['local_config', 'remote_config']:
+                item[c]['announcement_node_sig'] = ''
+                item[c]['announcement_bitcoin_sig'] = ''
+            item['local_config'].pop('was_announced')
+        self.data['seed_version'] = 56
+
+    def _convert_version_57(self):
+        if not self._is_upgrade_method_needed(56, 56):
+            return
+        # The 'seed_type' field could be present both at the top-level and inside keystores.
+        # We delete the one that is top-level.
+        self.data.pop('seed_type', None)
+        self.data['seed_version'] = 57
+
+    def _convert_version_58(self):
+        # re-construct prevouts_by_scripthash
+        # new structure:  scripthash -> outpoint -> value
+        if not self._is_upgrade_method_needed(57, 57):
+            return
+        from .bitcoin import script_to_scripthash
+        transactions = self.get('transactions', {})  # txid -> raw_tx
+        prevouts_by_scripthash = {}
+        for txid, raw_tx in transactions.items():
+            try:
+                tx = PartialTransaction.from_raw_psbt(raw_tx)
+            except BadHeaderMagic:
+                tx = Transaction(raw_tx)
+            for idx, txout in enumerate(tx.outputs()):
+                outpoint = f"{txid}:{idx}"
+                scripthash = script_to_scripthash(txout.scriptpubkey)
+                if scripthash not in prevouts_by_scripthash:
+                    prevouts_by_scripthash[scripthash] = {}
+                prevouts_by_scripthash[scripthash][outpoint] = txout.value
+        self.put('prevouts_by_scripthash', prevouts_by_scripthash)
+        self.data['seed_version'] = 58
+
+    def _convert_version_59(self):
+        if not self._is_upgrade_method_needed(58, 58):
+            return
+        channels = self.data.get('channels', {})
+        for _key, chan in channels.items():
+            chan.pop('fail_htlc_reasons', {})
+            unfulfilled_htlcs = {}
+            for htlc_id, (local_ctn, remote_ctn, onion_packet_hex, forwarding_key) in chan['unfulfilled_htlcs'].items():
+                unfulfilled_htlcs[htlc_id] = (onion_packet_hex, forwarding_key or None)
+            chan['unfulfilled_htlcs'] = unfulfilled_htlcs
+        self.data['channels'] = channels
+        self.data['seed_version'] = 59
+
+    def _convert_version_60(self):
+        if not self._is_upgrade_method_needed(59, 59):
+            return
+        cbs = self.data.get('imported_channel_backups', {})
+        for channel_id, cb in list(cbs.items()):
+            if 'multisig_funding_privkey' not in cb:
+                cb['multisig_funding_privkey'] = None
+        self.data['seed_version'] = 60
+
+    def _convert_version_61(self):
+        if not self._is_upgrade_method_needed(60, 60):
+            return
+        # adding additional fields to PaymentInfo
+        lightning_payments = self.data.get('lightning_payments', {})
+        expiry_never = 100 * 365 * 24 * 60 * 60
+        migration_time = int(time.time())
+        for rhash, (amount_msat, direction, is_paid) in list(lightning_payments.items()):
+            new = (amount_msat, direction, is_paid, 147, expiry_never, migration_time)
+            lightning_payments[rhash] = new
+        self.data['seed_version'] = 61
+
+    def _convert_version_62(self):
+        if not self._is_upgrade_method_needed(61, 61):
+            return
+        swaps = self.data.get('submarine_swaps', {})
+        # remove unused receive_address field which is getting replaced by a claim_to_output field
+        # which also allows specifying an amount
+        for swap in swaps.values():
+            del swap['receive_address']
+            swap['claim_to_output'] = None
+        self.data['seed_version'] = 62
+
+    def _convert_version_63(self):
+        if not self._is_upgrade_method_needed(62, 62):
+            return
+        # Old ReceivedMPPStatus:
+        #   class ReceivedMPPStatus(NamedTuple):
+        #      resolution: RecvMPPResolution
+        #      expected_msat: int
+        #      htlc_set: Set[Tuple[ShortChannelID, UpdateAddHtlc]]
+        #
+        # New ReceivedMPPStatus:
+        #   class ReceivedMPPStatus(NamedTuple):
+        #       resolution: RecvMPPResolution
+        #       htlcs: set[ReceivedMPPHtlc]
+        #
+        #   class ReceivedMPPHtlc(NamedTuple):
+        #       scid: ShortChannelID
+        #       htlc: UpdateAddHtlc
+        #       unprocessed_onion: str
+
+        # previously chan.unfulfilled_htlcs went through 4 stages:
+        # - 1. not forwarded yet: (onion_packet_hex, None)
+        # - 2. forwarded: (onion_packet_hex, forwarding_key)
+        # - 3. processed: (None, forwarding_key), not irrevocably removed yet
+        # - 4. done: (None, forwarding_key), irrevocably removed
+        channels = self.data.get('channels', {})
+        def _move_unprocessed_onion(short_channel_id: str, htlc_id: Optional[int]) -> Optional[Tuple[str, Optional[str]]]:
+            if htlc_id is None:
+                return None
+            for chan_ in channels.values():
+                if chan_['short_channel_id'] != short_channel_id:
+                    continue
+                unfulfilled_htlcs_ = chan_.get('unfulfilled_htlcs', {})
+                htlc_data = unfulfilled_htlcs_.get(str(htlc_id))
+                if htlc_data is None:
+                    return None
+                stored_onion_packet, htlc_forwarding_key = htlc_data
+                if stored_onion_packet is not None:
+                    htlc_data[0] = None  # overwrite the onion so it is not processed again in htlc_switch
+                    return stored_onion_packet, htlc_forwarding_key
+            return None
+
+        mpp_sets = self.data.get('received_mpp_htlcs', {})
+        for payment_key, recv_mpp_status in list(mpp_sets.items()):
+            assert isinstance(recv_mpp_status, list), f"{recv_mpp_status=}"
+            del recv_mpp_status[1]  # remove expected_msat
+
+            new_type_htlcs = []
+            forwarding_key = None
+            for scid, update_add_htlc in recv_mpp_status[1]:  # htlc_set
+                htlc_info_from_chan = _move_unprocessed_onion(scid, update_add_htlc[3])
+                if htlc_info_from_chan is None:
+                    # if there is no onion packet for the htlc it is dropped as it was already
+                    # processed in the old htlc_switch
+                    continue
+                onion_packet_hex = htlc_info_from_chan[0]
+                forwarding_key = htlc_info_from_chan[1] if htlc_info_from_chan[1] else forwarding_key
+                new_type_htlcs.append([
+                    scid,
+                    update_add_htlc,
+                    onion_packet_hex,
+                ])
+
+            if len(new_type_htlcs) == 0:
+                self.logger.debug(f"_convert_version_63: dropping mpp set {payment_key=}.")
+                del mpp_sets[payment_key]
+            else:
+                recv_mpp_status[1] = new_type_htlcs
+                self.logger.debug(f"_convert_version_63: migrated mpp set {payment_key=}")
+                if forwarding_key is not None:
+                    # if the forwarding key is set for the old mpp set it was either a forwarding
+                    # or a swap hold invoice. Assuming users of 4.6.2 don't use forwarding this update
+                    # most likely happens during a swap waiting for the preimage. Setting the mpp set
+                    # to SETTLING prevents us from accidentally failing the htlc set after the update,
+                    # however it carries the risk of the channel getting force closed if the swap fails
+                    # as the htlcs won't get failed due to the new SETTLING state
+                    # unless a forwarding error is set.
+                    recv_mpp_status[0] = 4  # RecvMPPResolution.SETTLING
+
+        # replace Tuple[onion, forwarding_key] with just the onion in chan['unfulfilled_htlcs']
+        for chan in channels.values():
+            unfulfilled_htlcs = chan.get('unfulfilled_htlcs', {})
+            for htlc_id, (unprocessed_onion, forwarding_key) in list(unfulfilled_htlcs.items()):
+                if unprocessed_onion is None:
+                    # delete all unfulfilled_htlcs with empty onion as they are already processed
+                    del unfulfilled_htlcs[htlc_id]
+                else:
+                    unfulfilled_htlcs[htlc_id] = unprocessed_onion
+
+        self.data['seed_version'] = 63
+
+    def _convert_version_64(self):
+        """Key payment_info by "rhash:direction" instead of just rhash to allow storing a PaymentInfo
+        for each direction"""
+        if not self._is_upgrade_method_needed(63, 63):
+            return
+
+        new_payment_infos = {}
+        old_payment_infos = self.data.get('lightning_payments', {})
+        for payment_hash, old_values in old_payment_infos.items():
+            amount_msat, direction, status, min_final_cltv_expiry, expiry, creation_ts = old_values
+            # drop direction
+            new_values = (amount_msat, status, min_final_cltv_expiry, expiry, creation_ts)
+            new_key = f"{payment_hash}:{direction}"
+            new_payment_infos[new_key] = new_values  # save new entry
+
+        self.data['lightning_payments'] = new_payment_infos
+        self.data['seed_version'] = 64
+
+    def _convert_version_65(self):
+        """Store channel_id instead of short_channel_id in ReceivedMPPHtlc"""
+        if not self._is_upgrade_method_needed(64, 64):
+            return
+
+        channels = self.data.get('channels', {})
+        def scid_to_channel_id(scid):
+            for channel_id, channel_data in channels.items():
+                if scid == channel_data.get('short_channel_id'):
+                    return channel_id
+            raise KeyError(f"missing {scid=} in channels")
+
+        mpp_sets = self.data.get('received_mpp_htlcs', {})
+        new_mpp_sets = {}
+        for payment_key, mpp_set in mpp_sets.items():
+            if len(mpp_set) == 2:
+                # if the db has received_mpp_htlcs pre version 65 we cannot assume they have parent_set_key
+                # as _convert_version_63 doesn't set it
+                resolution, htlc_list = mpp_set
+                parent_set_key = None
+            else:
+                resolution, htlc_list, parent_set_key = mpp_set
+            new_htlc_list = []
+            for htlc_data_tuple in htlc_list:
+                scid, update_add_htlc, onion = htlc_data_tuple
+                channel_id = scid_to_channel_id(scid)
+                new_htlc_list.append((channel_id, update_add_htlc, onion))
+            new_mpp_sets[payment_key] = (resolution, new_htlc_list, parent_set_key)
+
+        self.data['received_mpp_htlcs'] = new_mpp_sets
+        self.data['seed_version'] = 65
+
+    def _convert_version_66(self):
+        """Add invoice features to PaymentInfo"""
+        if not self._is_upgrade_method_needed(65, 65):
+            return
+
+        new_payment_infos = {}
+        old_payment_infos = self.data.get('lightning_payments', {})
+        for key, old_v in old_payment_infos.items():
+            amount_msat, status, min_final_cltv_expiry, expiry, creation_ts = old_v
+            invoice_features = 0x24100  # <VAR_ONION_REQ|PAYMENT_SECRET_REQ|BASIC_MPP_OPT>
+            new_v = (amount_msat, status, min_final_cltv_expiry, expiry, creation_ts, invoice_features)
+            new_payment_infos[key] = new_v
+
+        self.data['lightning_payments'] = new_payment_infos
+        self.data['seed_version'] = 66
+
+    def _convert_version_67(self):
+        if not self._is_upgrade_method_needed(66, 66):
+            return
+        channels = self.data.get('channels', {})
+        for _key, chan in channels.items():
+            is_initiator = chan['constraints']['is_initiator']
+            key = '-1' if is_initiator else '1'
+            assert len(chan['log'][key]['fee_updates']) == 1, chan['log'][key]['fee_updates']
+            chan['log'][key]['fee_updates'] = {}
+        self.data['channels'] = channels
+        self.data['seed_version'] = 67
+
+    def _convert_version_68(self):
+        if not self._is_upgrade_method_needed(67, 67):
+            return
+        old_preimages = self.data.get('lightning_preimages', {})
+        new_preimages = {}
+        for _hash, preimage in old_preimages.items():
+            new_preimages[_hash] = (preimage, False)
+        self.data['lightning_preimages'] = new_preimages
+        self.data['seed_version'] = 68
+
+    def _convert_version_69(self):
+        """Convert PaymentInfo amounts from 0 to None"""
+        if not self._is_upgrade_method_needed(68, 68):
+            return
+        new_payment_infos = {}
+        old_payment_infos = self.data.get('lightning_payments', {})
+        for key, old_v in old_payment_infos.items():
+            #amount_msat, status, min_final_cltv_delta, expiry_delay, creation_ts, invoice_features = old_v
+            amount_msat = old_v[0]
+            rhash, direction = key.split(":")  # key is "RHASH:direction"
+            direction = int(direction)
+            if direction == 1:  # RECEIVED
+                if amount_msat == 0:
+                    amount_msat = None
+            new_v = (amount_msat, *old_v[1:])
+            new_payment_infos[key] = new_v
+        self.data['lightning_payments'] = new_payment_infos
+        self.data['seed_version'] = 69
+
+    def _convert_version_70(self):
+        """
+        Converts spending budget values of nwc plugin from sat to msat.
+        """
+        if not self._is_upgrade_method_needed(69, 69):
+            return
+        nwc_connections = self.data.get('plugin_data', {}).get('nwc', {}).get('connections', {})
+        for pubkey, connection in nwc_connections.items():
+            new_budget_spends = []
+            for amount_sat, timestamp in connection.get('budget_spends', []):
+                new_budget_spends.append([amount_sat * 1000, timestamp])
+            connection['budget_spends'] = new_budget_spends
+        self.data['seed_version'] = 70
+
+    def _convert_version_71(self):
+        """Save 'genesis_blockhash' in DB."""
+        if not self._is_upgrade_method_needed(70, 70):
+            return
+        # first, check we are trying to open this DB on the correct chain (mainnet vs testnet)
+        addresses = self.data.get("addresses", {})
+        if self.data['wallet_type'] == 'imported':
+            recv_addrs = list(addresses.keys())
+        else:
+            recv_addrs = addresses.get("receiving", [])
+        if len(recv_addrs) > 0:
+            first_address = recv_addrs[0]
+            if not bitcoin.is_address(first_address):
+                neutered_addr = first_address[:5] + '..' + first_address[-2:]
+                raise WalletFileException(
+                    f"The addresses in this wallet are not bitcoin addresses. "
+                    f"e.g. {neutered_addr} (len={len(first_address)})")
+        # if so, save genesis hash
+        self.data['genesis_blockhash'] = constants.net.GENESIS
+        self.data['seed_version'] = 71
+
+    def _convert_version_72(self):
+        """Serialize imported channel backups into their internal binary blob format (hex), instead of json
+        StoredObjects."""
+        if not self._is_upgrade_method_needed(71, 71):
+            return
+
+        def _serialize_imported_channel_backup(cb: dict) -> str:
+            # this mirrors the wire format read by lnutil.ImportedChannelBackupStorage.from_bytes.
+            if cb['multisig_funding_privkey'] is not None:
+                version = 2
+            elif cb['local_payment_pubkey'] is not None:
+                version = 1
+            else:
+                version = 0
+            vds = BCDataStream()
+            vds.write_uint16(version)
+            vds.write_boolean(cb['is_initiator'])
+            vds.write_bytes(bfh(cb['privkey']), 32)
+            vds.write_bytes(bfh(cb['channel_seed']), 32)
+            vds.write_bytes(bfh(cb['node_id']), 33)
+            vds.write_bytes(bfh(cb['funding_txid']), 32)
+            # note: Electrum < 4.4.0 parsed the uint16 fields as int16 (see 5a4c39cb94), so
+            # imported backups may hold negative values (e.g. port 42069 stored as -23467): mask them
+            vds.write_uint16(cb['funding_index'] & 0xffff)
+            vds.write_string(cb['funding_address'])
+            vds.write_bytes(bfh(cb['remote_payment_pubkey']), 33)
+            vds.write_bytes(bfh(cb['remote_revocation_pubkey']), 33)
+            vds.write_uint16(cb['local_delay'] & 0xffff)
+            vds.write_uint16(cb['remote_delay'] & 0xffff)
+            vds.write_string(cb['host'])
+            vds.write_uint16(cb['port'] & 0xffff)
+            if version >= 1:
+                vds.write_bytes(bfh(cb['local_payment_pubkey']), 33)
+            if version >= 2:
+                vds.write_bytes(bfh(cb['multisig_funding_privkey']), 32)
+            return bytes(vds.input).hex()
+
+        channel_backups = self.data.get('imported_channel_backups', {})
+        for channel_id, storage in channel_backups.items():
+            channel_backups[channel_id] = _serialize_imported_channel_backup(storage)
+        self.data['seed_version'] = 72
+
     def _convert_imported(self):
         if not self._is_upgrade_method_needed(0, 13):
             return
@@ -910,18 +1526,19 @@ class WalletDB(JsonDB):
         else:
             return True
 
-    @locked
     def get_seed_version(self):
         seed_version = self.get('seed_version')
         if not seed_version:
             seed_version = OLD_SEED_VERSION if len(self.get('master_public_key','')) == 128 else NEW_SEED_VERSION
         if seed_version > FINAL_SEED_VERSION:
-            raise WalletFileException('This version of Electrum is too old to open this wallet.\n'
+            raise WalletFileException('This version of Electrum ({}) is too old to open this wallet.\n'
                                       '(highest supported storage version: {}, version of this file: {})'
-                                      .format(FINAL_SEED_VERSION, seed_version))
-        if seed_version==14 and self.get('seed_type') == 'segwit':
+                                      .format(ELECTRUM_VERSION, FINAL_SEED_VERSION, seed_version))
+        if seed_version == 14 and self.get('seed_type') == 'segwit':
             self._raise_unsupported_version(seed_version)
-        if seed_version >=12:
+        if seed_version == 51 and self._detect_insane_version_51():
+            self._raise_unsupported_version(seed_version)
+        if seed_version >= 12:
             return seed_version
         if seed_version not in [OLD_SEED_VERSION, NEW_SEED_VERSION]:
             self._raise_unsupported_version(seed_version)
@@ -940,7 +1557,88 @@ class WalletDB(JsonDB):
             else:
                 # creation was complete if electrum was run from source
                 msg += "\nPlease open this file with Electrum 1.9.8, and move your coins to a new wallet."
+        if seed_version == 51:
+            error_code = self._detect_insane_version_51()
+            assert error_code != 0
+            msg += f" ({error_code=})"
+            if error_code == 1:
+                msg += "\nThis is a multisig wallet containing an old_mpk (pre-bip32 master public key)."
+                msg += "\nPlease contact us to help recover it by opening an issue on GitHub."
+            elif error_code == 2:
+                msg += ("\nThis is a multisig wallet containing mixed xpub/Ypub/Zpub."
+                        "\nThe script type is determined by the type of the first keystore."
+                        "\nTo recover, you should re-create the wallet with matching type "
+                        "(converted if needed) master keys."
+                        "\nOr you can contact us to help recover it by opening an issue on GitHub.")
+            else:
+                raise Exception(f"unexpected {error_code=}")
+            raise WalletFileExceptionVersion51(msg, should_report_crash=True)
+        # generic exception
         raise WalletFileException(msg)
+
+
+def upgrade_wallet_db(data: dict, do_upgrade: bool) -> Tuple[dict, bool]:
+    was_upgraded = False
+
+    if len(data) == 0:
+        # create new DB
+        data['seed_version'] = FINAL_SEED_VERSION
+        data["genesis_blockhash"] = constants.net.GENESIS
+        # store this for debugging purposes
+        v = DBMetadata(
+            creation_timestamp=int(time.time()),
+            first_electrum_version_used=ELECTRUM_VERSION,
+        )
+        assert data.get("db_metadata", None) is None
+        data["db_metadata"] = v.to_json()
+        was_upgraded = True
+    # Test mainnet/testnet mixup. Do this before DB upgrades, as those might assume
+    # network magic bytes (e.g. if they parse an address or an xpub).
+    if data.get("genesis_blockhash", None) not in (constants.net.GENESIS, None):
+        raise WalletFileException(
+            _("This wallet file was created for a different network/chain.\n"
+              "Current chain: {}").format(constants.net.NET_NAME)
+        )
+
+    dbu = WalletDBUpgrader(data)
+    if dbu.requires_split():
+        raise WalletRequiresSplit(dbu.get_split_accounts())
+    if dbu.requires_upgrade() and do_upgrade:
+        dbu.upgrade()
+        was_upgraded = True
+    if dbu.requires_upgrade():
+        raise WalletRequiresUpgrade()
+    return dbu.data, was_upgraded
+
+
+class WalletDB(JsonDB):
+
+    def __init__(
+        self,
+        s: str,
+        *,
+        storage: Optional['WalletStorage'] = None,
+        upgrade: bool = False,
+    ):
+        JsonDB.__init__(
+            self,
+            s,
+            storage=storage,
+            encoder=MyEncoder,
+            upgrader=partial(upgrade_wallet_db, do_upgrade=upgrade),
+        )
+        # create pointers
+        self.load_transactions()
+        # load plugins that are conditional on wallet type
+        self.load_plugins()
+
+    @locked
+    def get_seed_version(self):
+        return self.get('seed_version')
+
+    def get_db_metadata(self) -> Optional[DBMetadata]:
+        # field only present for wallet files created with ver 4.4.0 or later
+        return self.get("db_metadata")
 
     @locked
     def get_txi_addresses(self, tx_hash: str) -> List[str]:
@@ -1057,23 +1755,23 @@ class WalletDB(JsonDB):
         assert isinstance(prevout, TxOutpoint)
         assert isinstance(value, int)
         if scripthash not in self._prevouts_by_scripthash:
-            self._prevouts_by_scripthash[scripthash] = set()
-        self._prevouts_by_scripthash[scripthash].add((prevout.to_str(), value))
+            self._prevouts_by_scripthash[scripthash] = dict()
+        self._prevouts_by_scripthash[scripthash][prevout.to_str()] = value
 
     @modifier
     def remove_prevout_by_scripthash(self, scripthash: str, *, prevout: TxOutpoint, value: int) -> None:
         assert isinstance(scripthash, str)
         assert isinstance(prevout, TxOutpoint)
         assert isinstance(value, int)
-        self._prevouts_by_scripthash[scripthash].discard((prevout.to_str(), value))
+        self._prevouts_by_scripthash[scripthash].pop(prevout.to_str(), None)
         if not self._prevouts_by_scripthash[scripthash]:
             self._prevouts_by_scripthash.pop(scripthash)
 
     @locked
     def get_prevouts_by_scripthash(self, scripthash: str) -> Set[Tuple[TxOutpoint, int]]:
         assert isinstance(scripthash, str)
-        prevouts_and_values = self._prevouts_by_scripthash.get(scripthash, set())
-        return {(TxOutpoint.from_str(prevout), value) for prevout, value in prevouts_and_values}
+        prevouts_and_values = self._prevouts_by_scripthash.get(scripthash, {})
+        return {(TxOutpoint.from_str(prevout), value) for prevout, value in prevouts_and_values.items()}
 
     @modifier
     def add_transaction(self, tx_hash: str, tx: Transaction) -> None:
@@ -1081,7 +1779,7 @@ class WalletDB(JsonDB):
         assert isinstance(tx, Transaction), tx
         # note that tx might be a PartialTransaction
         # serialize and de-serialize tx now. this might e.g. convert a complete PartialTx to a Tx
-        tx = tx_from_any(str(tx))
+        tx = tx_from_any(str(tx), sanitize=False)
         if not tx_hash:
             raise Exception("trying to add tx to db without txid")
         if tx_hash != tx.txid():
@@ -1141,7 +1839,7 @@ class WalletDB(JsonDB):
         if txid not in self.verified_tx:
             return None
         height, timestamp, txpos, header_hash = self.verified_tx[txid]
-        return TxMinedInfo(height=height,
+        return TxMinedInfo(_height=height,
                            conf=None,
                            timestamp=timestamp,
                            txpos=txpos,
@@ -1151,7 +1849,9 @@ class WalletDB(JsonDB):
     def add_verified_tx(self, txid: str, info: TxMinedInfo):
         assert isinstance(txid, str)
         assert isinstance(info, TxMinedInfo)
-        self.verified_tx[txid] = (info.height, info.timestamp, info.txpos, info.header_hash)
+        height = info._height  # number of conf is dynamic and might not be set here
+        assert height > 0, height
+        self.verified_tx[txid] = (height, info.timestamp, info.txpos, info.header_hash)
 
     @modifier
     def remove_verified_tx(self, txid: str):
@@ -1165,6 +1865,7 @@ class WalletDB(JsonDB):
     @modifier
     def add_tx_fee_from_server(self, txid: str, fee_sat: Optional[int]) -> None:
         assert isinstance(txid, str)
+        assert fee_sat is None or isinstance(fee_sat, int)
         # note: when called with (fee_sat is None), rm currently saved value
         if txid not in self.tx_fees:
             self.tx_fees[txid] = TxFeesValue()
@@ -1220,14 +1921,6 @@ class WalletDB(JsonDB):
     def remove_tx_fee(self, txid: str) -> None:
         assert isinstance(txid, str)
         self.tx_fees.pop(txid, None)
-
-    @locked
-    def get_dict(self, name) -> dict:
-        # Warning: interacts un-intuitively with 'put': certain parts
-        # of 'data' will have pointers saved as separate variables.
-        if name not in self.data:
-            self.data[name] = {}
-        return self.data[name]
 
     @locked
     def num_change_addresses(self) -> int:
@@ -1306,8 +1999,7 @@ class WalletDB(JsonDB):
                 self._addr_to_addr_index[addr] = (1, i)
 
     @profiler
-    def _load_transactions(self):
-        self.data = StoredDict(self.data, self, [])
+    def load_transactions(self):
         # references in self.data
         # TODO make all these private
         # txid -> address -> prev_outpoint -> value
@@ -1319,8 +2011,8 @@ class WalletDB(JsonDB):
         self.history = self.get_dict('addr_history')             # address -> list of (txid, height)
         self.verified_tx = self.get_dict('verified_tx3')         # txid -> (height, timestamp, txpos, header_hash)
         self.tx_fees = self.get_dict('tx_fees')                  # type: Dict[str, TxFeesValue]
-        # scripthash -> set of (outpoint, value)
-        self._prevouts_by_scripthash = self.get_dict('prevouts_by_scripthash')  # type: Dict[str, Set[Tuple[str, int]]]
+        # scripthash -> outpoint -> value
+        self._prevouts_by_scripthash = self.get_dict('prevouts_by_scripthash')  # type: Dict[str, Dict[str, int]]
         # remove unreferenced tx
         for tx_hash in list(self.transactions.keys()):
             if not self.get_txi_addresses(tx_hash) and not self.get_txo_addresses(tx_hash):
@@ -1345,95 +2037,25 @@ class WalletDB(JsonDB):
         self.tx_fees.clear()
         self._prevouts_by_scripthash.clear()
 
-    def _convert_dict(self, path, key, v):
-        if key == 'transactions':
-            # note: for performance, "deserialize=False" so that we will deserialize these on-demand
-            v = dict((k, tx_from_any(x, deserialize=False)) for k, x in v.items())
-        if key == 'invoices':
-            v = dict((k, Invoice.from_json(x)) for k, x in v.items())
-        if key == 'payment_requests':
-            v = dict((k, Invoice.from_json(x)) for k, x in v.items())
-        elif key == 'adds':
-            v = dict((k, UpdateAddHtlc.from_tuple(*x)) for k, x in v.items())
-        elif key == 'fee_updates':
-            v = dict((k, FeeUpdate(**x)) for k, x in v.items())
-        elif key == 'submarine_swaps':
-            v = dict((k, SwapData(**x)) for k, x in v.items())
-        elif key == 'imported_channel_backups':
-            v = dict((k, ImportedChannelBackupStorage(**x)) for k, x in v.items())
-        elif key == 'onchain_channel_backups':
-            v = dict((k, OnchainChannelBackupStorage(**x)) for k, x in v.items())
-        elif key == 'tx_fees':
-            v = dict((k, TxFeesValue(*x)) for k, x in v.items())
-        elif key == 'prevouts_by_scripthash':
-            v = dict((k, {(prevout, value) for (prevout, value) in x}) for k, x in v.items())
-        elif key == 'buckets':
-            v = dict((k, ShachainElement(bfh(x[0]), int(x[1]))) for k, x in v.items())
-        elif key == 'data_loss_protect_remote_pcp':
-            v = dict((k, bfh(x)) for k, x in v.items())
-        # convert htlc_id keys to int
-        if key in ['adds', 'locked_in', 'settles', 'fails', 'fee_updates', 'buckets',
-                   'unacked_updates', 'unfulfilled_htlcs', 'fail_htlc_reasons', 'onion_keys']:
-            v = dict((int(k), x) for k, x in v.items())
-        # convert keys to HTLCOwner
-        if key == 'log' or (path and path[-1] in ['locked_in', 'fails', 'settles']):
-            if "1" in v:
-                v[LOCAL] = v.pop("1")
-                v[REMOTE] = v.pop("-1")
-        return v
-
-    def _convert_value(self, path, key, v):
-        if key == 'local_config':
-            v = LocalConfig(**v)
-        elif key == 'remote_config':
-            v = RemoteConfig(**v)
-        elif key == 'constraints':
-            v = ChannelConstraints(**v)
-        elif key == 'funding_outpoint':
-            v = Outpoint(**v)
-        elif key == 'channel_type':
-            v = ChannelType(v)
-        return v
-
     def _should_convert_to_stored_dict(self, key) -> bool:
         if key == 'keystore':
             return False
-        multisig_keystore_names = [('x%d/' % i) for i in range(1, 16)]
+        multisig_keystore_names = [('x%d' % i) for i in range(1, 16)]
         if key in multisig_keystore_names:
             return False
         return True
 
-    def write(self, storage: 'WalletStorage'):
-        with self.lock:
-            self._write(storage)
-
-    @profiler
-    def _write(self, storage: 'WalletStorage'):
-        if threading.current_thread().daemon:
-            self.logger.warning('daemon thread cannot write db')
-            return
-        if not self.modified():
-            return
-        json_str = self.dump(human_readable=not storage.is_encrypted())
-        storage.write(json_str)
-        self.set_modified(False)
-
-    def is_ready_to_be_used_by_wallet(self):
-        return not self.requires_upgrade() and self._called_after_upgrade_tasks
-
-    def split_accounts(self, root_path):
+    @classmethod
+    def split_accounts(klass, root_path, split_data):
         from .storage import WalletStorage
-        out = []
-        result = self.get_split_accounts()
-        for data in result:
+        file_list = []
+        for data in split_data:
             path = root_path + '.' + data['suffix']
-            storage = WalletStorage(path)
-            db = WalletDB(json.dumps(data), manual_upgrades=False)
-            db._called_after_upgrade_tasks = False
-            db.upgrade()
-            db.write(storage)
-            out.append(path)
-        return out
+            item_storage = WalletStorage(path)
+            db = WalletDB(json.dumps(data), storage=item_storage, upgrade=True)
+            db.write()
+            file_list.append(path)
+        return file_list
 
     def get_action(self):
         action = run_hook('get_action', self)
@@ -1443,6 +2065,17 @@ class WalletDB(JsonDB):
         wallet_type = self.get('wallet_type')
         if wallet_type in plugin_loaders:
             plugin_loaders[wallet_type]()
+
+    def get_plugin_storage(self) -> dict:
+        return self.get_dict('plugin_data')
+
+    def prune_uninstalled_plugin_data(self, installed_plugins: AbstractSet[str]) -> None:
+        """Remove plugin data for plugins that are not installed anymore."""
+        plugin_storage = self.get_plugin_storage()
+        for name in list(plugin_storage.keys()):
+            if name not in installed_plugins:
+                plugin_storage.pop(name)
+                self.logger.info(f"deleting plugin data: {name=}")
 
     def set_keystore_encryption(self, enable):
         self.put('use_encryption', enable)

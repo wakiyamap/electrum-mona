@@ -1,9 +1,7 @@
-[submodule "electrum_mona/www"]
-	path = electrum_mona/www
-	url = https://github.com/wakiyamap/electrum-http.git
-[submodule "electrum_mona/gui/kivy/theming/atlas"]
-	path = electrum_mona/gui/kivy/theming/atlas
-	url = https://github.com/spesmilo/electrum-kivy-atlas
-[submodule "contrib/deterministic-build/electrum-locale"]
-	path = contrib/deterministic-build/electrum-locale
-	url = https://github.com/spesmilo/electrum-locale
+[submodule "electrum/locale"]
+	path = electrum_mona/locale
+    url = https://github.com/spesmilo/electrum-locale
+    ignore = dirty
+[submodule "electrum/plugins/keepkey/keepkeylib"]
+	path = electrum_mona/plugins/keepkey/keepkeylib
+    url = https://github.com/spesmilo/electrum-keepkeylib.git

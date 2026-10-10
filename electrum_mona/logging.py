@@ -5,13 +5,18 @@
 import logging
 import logging.handlers
 import datetime
+from functools import lru_cache
 import sys
 import pathlib
 import os
 import platform
-from typing import Optional
+from typing import Optional, TYPE_CHECKING, Set
 import copy
 import subprocess
+import hashlib
+
+if TYPE_CHECKING:
+    from .simple_config import SimpleConfig
 
 
 class LogFormatterForFiles(logging.Formatter):
@@ -33,24 +38,26 @@ file_formatter = LogFormatterForFiles(fmt="%(asctime)22s | %(levelname)8s | %(na
 
 class LogFormatterForConsole(logging.Formatter):
 
+    def formatTime(self, record, datefmt=None):
+        t = record.relativeCreated / 1000
+        return f"{t:6.2f}"
+
     def format(self, record):
+        record = copy.copy(record)  # avoid mutating arg
         record = _shorten_name_of_logrecord(record)
         text = super().format(record)
-        shortcut = getattr(record, 'custom_shortcut', None)
-        if shortcut:
-            text = text[:1] + f"/{shortcut}" + text[1:]
         return text
 
 
 # try to make console log lines short... no timestamp, short levelname, no "electrum."
-console_formatter = LogFormatterForConsole(fmt="%(levelname).1s | %(name)s | %(message)s")
+console_formatter = LogFormatterForConsole(fmt="%(asctime)s | %(levelname).1s | %(name)s | %(message)s")
 
 
 def _shorten_name_of_logrecord(record: logging.LogRecord) -> logging.LogRecord:
     record = copy.copy(record)  # avoid mutating arg
     # strip the main module name from the logger name
     if record.name.startswith("electrum_mona."):
-        record.name = record.name[14:]
+        record.name = record.name[len("electrum_mona."):]
     # manual map to shorten common module names
     record.name = record.name.replace("interface.Interface", "interface", 1)
     record.name = record.name.replace("network.Network", "network", 1)
@@ -110,28 +117,66 @@ class TruncatingMemoryHandler(logging.handlers.MemoryHandler):
         super().close()
 
 
-def _delete_old_logs(path, keep=10):
-    files = sorted(list(pathlib.Path(path).glob("electrum_mona_log_*.log")), reverse=True)
-    for f in files[keep:]:
+def _delete_old_logs(path, *, num_files_keep: int, max_total_size: int):
+    """Delete old logfiles, only keeping the latest few."""
+    def sortkey_oldest_first(p: pathlib.PurePath):
+        fname = p.name
+        basename, ext, counter = str(fname).partition(".log")
+        # - each time electrum is launched, there will be a new basename, ordered by date
+        # - for any given basename, there might be multiple log files, differing by counter
+        #   - empty counter is newest, then .1 is older, .2 is even older, etc
         try:
-            os.remove(str(f))
+            counter = int(counter[1:]) if counter else 0  # convert ".2" -> 2
+        except ValueError:
+            _logger.warning(f"failed to parse log file name: {fname}")
+            counter = 0
+        return basename, -counter
+    files = sorted(
+        list(pathlib.Path(path).glob("electrum_log_*.log*")),
+        key=sortkey_oldest_first,
+    )
+    total_size = sum(os.stat(f).st_size for f in files)  # in bytes
+    num_files_remaining = len(files)
+    for f in files:
+        fsize = os.stat(f).st_size
+        if total_size < max_total_size and num_files_remaining <= num_files_keep:
+            break
+        total_size -= fsize
+        num_files_remaining -= 1
+        try:
+            os.remove(f)
         except OSError as e:
             _logger.warning(f"cannot delete old logfile: {e}")
 
 
 _logfile_path = None
-def _configure_file_logging(log_directory: pathlib.Path):
+def _configure_file_logging(
+    log_directory: pathlib.Path,
+    *,
+    num_files_keep: int,
+    max_total_size: int,
+):
+    from .util import os_chmod
+
     global _logfile_path
     assert _logfile_path is None, 'file logging already initialized'
-    log_directory.mkdir(exist_ok=True)
+    log_directory.mkdir(exist_ok=True, mode=0o700)
 
-    _delete_old_logs(log_directory)
+    _delete_old_logs(log_directory, num_files_keep=num_files_keep, max_total_size=max_total_size)
 
-    timestamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     PID = os.getpid()
-    _logfile_path = log_directory / f"electrum_mona_log_{timestamp}_{PID}.log"
+    _logfile_path = log_directory / f"electrum_log_{timestamp}_{PID}.log"
+    # we create the file with restrictive perms, instead of letting FileHandler create it
+    with open(_logfile_path, "w+") as f:
+        os_chmod(_logfile_path, 0o600)
 
-    file_handler = logging.FileHandler(_logfile_path, encoding='utf-8')
+    logfile_backupcount = 4
+    file_handler = logging.handlers.RotatingFileHandler(
+        _logfile_path,
+        maxBytes=max_total_size // (logfile_backupcount+1),
+        backupCount=logfile_backupcount,
+        encoding='utf-8')
     file_handler.setFormatter(file_formatter)
     file_handler.setLevel(logging.DEBUG)
     root_logger.addHandler(file_handler)
@@ -140,7 +185,7 @@ def _configure_file_logging(log_directory: pathlib.Path):
 
 
 console_stderr_handler = None
-def _configure_stderr_logging(*, verbosity=None, verbosity_shortcuts=None):
+def _configure_stderr_logging(*, verbosity=None):
     # log to stderr; by default only WARNING and higher
     global console_stderr_handler
     if console_stderr_handler is not None:
@@ -148,14 +193,13 @@ def _configure_stderr_logging(*, verbosity=None, verbosity_shortcuts=None):
         return
     console_stderr_handler = logging.StreamHandler(sys.stderr)
     console_stderr_handler.setFormatter(console_formatter)
-    if not verbosity and not verbosity_shortcuts:
+    if not verbosity:
         console_stderr_handler.setLevel(logging.WARNING)
         root_logger.addHandler(console_stderr_handler)
     else:
         console_stderr_handler.setLevel(logging.DEBUG)
         root_logger.addHandler(console_stderr_handler)
         _process_verbosity_log_levels(verbosity)
-        _process_verbosity_filter_shortcuts(verbosity_shortcuts, handler=console_stderr_handler)
     if _inmemory_startup_logs:
         _inmemory_startup_logs.dump_to_target(console_stderr_handler)
 
@@ -181,63 +225,22 @@ def _process_verbosity_log_levels(verbosity):
             raise Exception(f"invalid log filter: {filt}")
 
 
-def _process_verbosity_filter_shortcuts(verbosity_shortcuts, *, handler: 'logging.Handler'):
-    if not isinstance(verbosity_shortcuts, str):
-        return
-    if len(verbosity_shortcuts) < 1:
-        return
-    # depending on first character being '^', either blacklist or whitelist
-    is_blacklist = verbosity_shortcuts[0] == '^'
-    if is_blacklist:
-        filters = verbosity_shortcuts[1:]
-    else:  # whitelist
-        filters = verbosity_shortcuts[0:]
-    filt = ShortcutFilteringFilter(is_blacklist=is_blacklist, filters=filters)
-    # apply filter directly (and only!) on stderr handler
-    # note that applying on one of the root loggers directly would not work,
-    # see https://docs.python.org/3/howto/logging.html#logging-flow
-    handler.addFilter(filt)
+class _CustomLogger(logging.getLoggerClass()):
+    def __init__(self, name, *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
+        self.msg_hashes_seen = set()  # type: Set[bytes]
+        # ^ note: size grows without bounds, but only for log lines using "only_once".
 
+    def _log(self, level, msg: str, *args, only_once: bool = False, **kwargs) -> None:
+        """Overridden to add 'only_once' arg to logger.debug()/logger.info()/logger.warning()/etc."""
+        if only_once:  # if set, this logger will only log this msg a single time during its lifecycle
+            msg_hash = hashlib.sha256(msg.encode("utf-8")).digest()
+            if msg_hash in self.msg_hashes_seen:
+                return
+            self.msg_hashes_seen.add(msg_hash)
+        super()._log(level, msg, *args, **kwargs)
 
-class ShortcutInjectingFilter(logging.Filter):
-
-    def __init__(self, *, shortcut: Optional[str]):
-        super().__init__()
-        self.__shortcut = shortcut
-
-    def filter(self, record):
-        record.custom_shortcut = self.__shortcut
-        return True
-
-
-class ShortcutFilteringFilter(logging.Filter):
-
-    def __init__(self, *, is_blacklist: bool, filters: str):
-        super().__init__()
-        self.__is_blacklist = is_blacklist
-        self.__filters = filters
-
-    def filter(self, record):
-        # all errors are let through
-        if record.levelno >= logging.ERROR:
-            return True
-        # the logging module itself is let through
-        if record.name == __name__:
-            return True
-        # do filtering
-        shortcut = getattr(record, 'custom_shortcut', None)
-        if self.__is_blacklist:
-            if shortcut is None:
-                return True
-            if shortcut in self.__filters:
-                return False
-            return True
-        else:  # whitelist
-            if shortcut is None:
-                return False
-            if shortcut in self.__filters:
-                return True
-            return False
+logging.setLoggerClass(_CustomLogger)
 
 
 # enable logs universally (including for other libraries)
@@ -260,15 +263,16 @@ if getattr(sys, "_ELECTRUM_RUNNING_VIA_RUNELECTRUM", False):
     root_logger.addHandler(_inmemory_startup_logs)
 
 # creates a logger specifically for electrum library
-electrum_logger = logging.getLogger("electrum_mona")
+electrum_logger = logging.getLogger("electrum")
 electrum_logger.setLevel(logging.DEBUG)
 
 
 # --- External API
 
-def get_logger(name: str) -> logging.Logger:
-    if name.startswith("electrum_mona."):
-        name = name[14:]
+def get_logger(name: str) -> _CustomLogger:
+    prefix = "electrum_mona."
+    if name.startswith(prefix):
+        name = name[len(prefix):]
     return electrum_logger.getChild(name)
 
 
@@ -277,10 +281,6 @@ _logger.setLevel(logging.INFO)
 
 
 class Logger:
-
-    # Single character short "name" for this class.
-    # Can be used for filtering log lines. Does not need to be unique.
-    LOGGING_SHORTCUT = None  # type: Optional[str]
 
     def __init__(self):
         self.logger = self.__get_logger_for_obj()
@@ -298,28 +298,28 @@ class Logger:
         if diag_name:
             name += f".[{diag_name}]"
         logger = get_logger(name)
-        if self.LOGGING_SHORTCUT:
-            logger.addFilter(ShortcutInjectingFilter(shortcut=self.LOGGING_SHORTCUT))
         return logger
 
     def diagnostic_name(self):
         return ''
 
 
-def configure_logging(config):
-    verbosity = config.get('verbosity')
-    verbosity_shortcuts = config.get('verbosity_shortcuts')
-    _configure_stderr_logging(verbosity=verbosity, verbosity_shortcuts=verbosity_shortcuts)
+def configure_logging(config: 'SimpleConfig', *, log_to_file: Optional[bool] = None) -> None:
+    from .util import is_android_debug_apk
 
-    log_to_file = config.get('log_to_file', False)
-    is_android = 'ANDROID_DATA' in os.environ
-    if is_android:
-        from jnius import autoclass
-        build_config = autoclass("org.electrum_mona.electrum_mona.BuildConfig")
-        log_to_file |= bool(build_config.DEBUG)
+    verbosity = config.get('verbosity')
+    if not verbosity and config.GUI_ENABLE_DEBUG_LOGS:
+        verbosity = '*'
+    _configure_stderr_logging(verbosity=verbosity)
+
+    if log_to_file is None:
+        log_to_file = config.WRITE_LOGS_TO_DISK
+        log_to_file |= is_android_debug_apk()
     if log_to_file:
         log_directory = pathlib.Path(config.path) / "logs"
-        _configure_file_logging(log_directory)
+        num_files_keep = config.LOGS_NUM_FILES_KEEP
+        max_total_size = config.LOGS_MAX_TOTAL_SIZE_BYTES
+        _configure_file_logging(log_directory, num_files_keep=num_files_keep, max_total_size=max_total_size)
 
     # clean up and delete in-memory logs
     global _inmemory_startup_logs
@@ -332,15 +332,12 @@ def configure_logging(config):
         root_logger.removeHandler(_inmemory_startup_logs)
         _inmemory_startup_logs = None
 
-    # if using kivy, avoid kivy's own logs to get printed twice
-    logging.getLogger('kivy').propagate = False
-
     from . import ELECTRUM_VERSION
     from .constants import GIT_REPO_URL
-    _logger.info(f"Electrum version: {ELECTRUM_VERSION} - https://electrum-mona.org.org - {GIT_REPO_URL}")
+    _logger.info(f"Electrum version: {ELECTRUM_VERSION} - https://electrum.org - {GIT_REPO_URL}")
     _logger.info(f"Python version: {sys.version}. On platform: {describe_os_version()}")
     _logger.info(f"Logging to file: {str(_logfile_path)}")
-    _logger.info(f"Log filters: verbosity {repr(verbosity)}, verbosity_shortcuts {repr(verbosity_shortcuts)}")
+    _logger.info(f"Log filters: verbosity {repr(verbosity)}")
 
 
 def get_logfile_path() -> Optional[pathlib.Path]:
@@ -349,9 +346,6 @@ def get_logfile_path() -> Optional[pathlib.Path]:
 
 def describe_os_version() -> str:
     if 'ANDROID_DATA' in os.environ:
-        from kivy import utils
-        if utils.platform != "android":
-            return utils.platform
         import jnius
         bv = jnius.autoclass('android.os.Build$VERSION')
         b = jnius.autoclass('android.os.Build')
@@ -360,11 +354,16 @@ def describe_os_version() -> str:
         return platform.platform()
 
 
+@lru_cache  # result unlikely to change while running. though "-dirty" could technically change
 def get_git_version() -> Optional[str]:
     dir = os.path.dirname(os.path.realpath(__file__))
     try:
+        # note: this searches $PATH and perhaps $PWD for an executable named "git".  attack surface?
         version = subprocess.check_output(
-            ['git', 'describe', '--always', '--dirty'], cwd=dir)
+            ['git', 'describe', '--always', '--dirty'],
+            cwd=dir,
+            timeout=5,  # seconds
+        )
         version = str(version, "utf8").strip()
     except Exception:
         version = None

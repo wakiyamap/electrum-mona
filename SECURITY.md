@@ -1,20 +1,18 @@
-# Security Policy
+Two main ways to responsibly report security issues privately:
 
-## Reporting a Vulnerability
+1. (preferred) if you have a GitHub account, use the built-in
+  ["Report a vulnerability"](https://github.com/wakiyamap/electrum-mona/security/advisories/new)
+  flow, or
+2. you can send an email to the addresses listed below.
+  (Not for support. Support requests will be *ignored*.)
 
-To report security issues send an email to wakiyamap+electrum@gmail.com.
+If using email, please send any report to *all* emails listed here.
 
-The following keys may be used to communicate sensitive information to developers:
+| Name        | Email                                  | GPG fingerprint                                   |
+|-------------|----------------------------------------|---------------------------------------------------|
+| wakiyamap   | wakiyamap+electrum [AT] gmail [DOT] com | 3155 25E8 11D5 E586 F3CA C032 9C74 0BEC 897C E499 |
 
-| Name | Fingerprint |
-|------|-------------|
-| wakiyamap | 3155 25E8 11D5 E586 F3CA C032 9C74 0BEC 897C E499 |
-
-You can import a key by running the following command with that
-individual’s fingerprint: `gpg --recv-keys "<fingerprint>"`
-Ensure that you put quotes around fingerprints containing spaces.
-
-These public keys can also be found in the Electrum git repository,
+These GPG public keys can be found in the Electrum-mona git repository,
 in the top-level `pubkeys` folder.
 
 or

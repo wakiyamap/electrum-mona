@@ -2,202 +2,157 @@
 # Distributed under the MIT software license, see the accompanying
 # file LICENCE or http://www.opensource.org/licenses/mit-license.php
 
-from typing import NamedTuple, Iterable, TYPE_CHECKING
-import os
 import asyncio
-from enum import IntEnum, auto
-from typing import NamedTuple, Dict
+from typing import TYPE_CHECKING, Optional, Dict, Callable, Awaitable
 
 from . import util
-from .sql_db import SqlDB, sql
-from .wallet_db import WalletDB
-from .util import bh2u, bfh, log_exceptions, ignore_exceptions, TxMinedInfo, random_shuffled_copy
-from .address_synchronizer import AddressSynchronizer, TX_HEIGHT_LOCAL, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED
+from .util import (
+    TxMinedInfo, BelowDustLimit, NoDynamicFeeEstimates, OldTaskGroup, EventListener, event_listener, log_exceptions,
+    ignore_exceptions, now
+)
 from .transaction import Transaction, TxOutpoint
+from .logging import Logger
+from .address_synchronizer import TX_HEIGHT_LOCAL
+from .lnutil import REDEEM_AFTER_DOUBLE_SPENT_DELAY
+from .lnsweep import KeepWatchingTXO, SweepInfo, MaybeSweepInfo
 
 if TYPE_CHECKING:
     from .network import Network
-    from .lnsweep import SweepInfo
     from .lnworker import LNWallet
-
-class ListenerItem(NamedTuple):
-    # this is triggered when the lnwatcher is all done with the outpoint used as index in LNWatcher.tx_progress
-    all_done : asyncio.Event
-    # txs we broadcast are put on this queue so that the test can wait for them to get mined
-    tx_queue : asyncio.Queue
-
-class TxMinedDepth(IntEnum):
-    """ IntEnum because we call min() in get_deepest_tx_mined_depth_for_txids """
-    DEEP = auto()
-    SHALLOW = auto()
-    MEMPOOL = auto()
-    FREE = auto()
+    from .lnchannel import AbstractChannel
 
 
-create_sweep_txs="""
-CREATE TABLE IF NOT EXISTS sweep_txs (
-funding_outpoint VARCHAR(34) NOT NULL,
-ctn INTEGER NOT NULL,
-prevout VARCHAR(34),
-tx VARCHAR
-)"""
+class LNWatcher(Logger, EventListener):
+    MAX_CALLBACK_TRIGGER_DELAY_SEC = 600
+    CALLBACK_LOOP_POLL_INTERVAL_SEC = 5
 
-create_channel_info="""
-CREATE TABLE IF NOT EXISTS channel_info (
-outpoint VARCHAR(34) NOT NULL,
-address VARCHAR(32),
-PRIMARY KEY(outpoint)
-)"""
+    def __init__(self, lnworker: 'LNWallet'):
+        self.lnworker = lnworker
+        Logger.__init__(self)
+        self.adb = lnworker.wallet.adb
+        self.config = lnworker.config
+        self.callbacks = {}  # type: Dict[str, Callable[[], Awaitable[None]]]  # address -> lambda function
+        self.network = None
+        self.register_callbacks()
+        self._pending_force_closes = {}  # type: Dict['AbstractChannel', int]  # chan -> lowest remote htlc timeout height
+        self.taskgroup = OldTaskGroup()
+        self._last_callback_trigger_ts = 0
 
-
-class SweepStore(SqlDB):
-
-    def __init__(self, path, network):
-        super().__init__(network.asyncio_loop, path)
-
-    def create_database(self):
-        c = self.conn.cursor()
-        c.execute(create_channel_info)
-        c.execute(create_sweep_txs)
-        self.conn.commit()
-
-    @sql
-    def get_sweep_tx(self, funding_outpoint, prevout):
-        c = self.conn.cursor()
-        c.execute("SELECT tx FROM sweep_txs WHERE funding_outpoint=? AND prevout=?", (funding_outpoint, prevout))
-        return [Transaction(bh2u(r[0])) for r in c.fetchall()]
-
-    @sql
-    def list_sweep_tx(self):
-        c = self.conn.cursor()
-        c.execute("SELECT funding_outpoint FROM sweep_txs")
-        return set([r[0] for r in c.fetchall()])
-
-    @sql
-    def add_sweep_tx(self, funding_outpoint, ctn, prevout, raw_tx):
-        c = self.conn.cursor()
-        assert Transaction(raw_tx).is_complete()
-        c.execute("""INSERT INTO sweep_txs (funding_outpoint, ctn, prevout, tx) VALUES (?,?,?,?)""", (funding_outpoint, ctn, prevout, bfh(raw_tx)))
-        self.conn.commit()
-
-    @sql
-    def get_num_tx(self, funding_outpoint):
-        c = self.conn.cursor()
-        c.execute("SELECT count(*) FROM sweep_txs WHERE funding_outpoint=?", (funding_outpoint,))
-        return int(c.fetchone()[0])
-
-    @sql
-    def get_ctn(self, outpoint, addr):
-        if not self._has_channel(outpoint):
-            self._add_channel(outpoint, addr)
-        c = self.conn.cursor()
-        c.execute("SELECT max(ctn) FROM sweep_txs WHERE funding_outpoint=?", (outpoint,))
-        return int(c.fetchone()[0] or 0)
-
-    @sql
-    def remove_sweep_tx(self, funding_outpoint):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM sweep_txs WHERE funding_outpoint=?", (funding_outpoint,))
-        self.conn.commit()
-
-    def _add_channel(self, outpoint, address):
-        c = self.conn.cursor()
-        c.execute("INSERT INTO channel_info (address, outpoint) VALUES (?,?)", (address, outpoint))
-        self.conn.commit()
-
-    @sql
-    def remove_channel(self, outpoint):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM channel_info WHERE outpoint=?", (outpoint,))
-        self.conn.commit()
-
-    def _has_channel(self, outpoint):
-        c = self.conn.cursor()
-        c.execute("SELECT * FROM channel_info WHERE outpoint=?", (outpoint,))
-        r = c.fetchone()
-        return r is not None
-
-    @sql
-    def get_address(self, outpoint):
-        c = self.conn.cursor()
-        c.execute("SELECT address FROM channel_info WHERE outpoint=?", (outpoint,))
-        r = c.fetchone()
-        return r[0] if r else None
-
-    @sql
-    def list_channels(self):
-        c = self.conn.cursor()
-        c.execute("SELECT outpoint, address FROM channel_info")
-        return [(r[0], r[1]) for r in c.fetchall()]
-
-
-
-class LNWatcher(AddressSynchronizer):
-    LOGGING_SHORTCUT = 'W'
-
-    def __init__(self, network: 'Network'):
-        AddressSynchronizer.__init__(self, WalletDB({}, manual_upgrades=False))
-        self.config = network.config
-        self.callbacks = {} # address -> lambda: coroutine
+    def start_network(self, network: 'Network'):
+        assert not self.network, "already started?"
         self.network = network
-        util.register_callback(
-            self.on_network_update,
-            ['network_updated', 'blockchain_updated', 'verified', 'wallet_updated', 'fee'])
-
-        # status gets populated when we run
-        self.channel_status = {}
+        asyncio.run_coroutine_threadsafe(self._main_loop(), util.get_asyncio_loop())
 
     async def stop(self):
-        await super().stop()
-        util.unregister_callback(self.on_network_update)
+        await self.taskgroup.cancel_remaining()
+        self.unregister_callbacks()
 
-    def get_channel_status(self, outpoint):
-        return self.channel_status.get(outpoint, 'unknown')
+    async def _main_loop(self):
+        self.logger.debug("starting taskgroup")
+        try:
+            async with self.taskgroup as group:
+                await group.spawn(self._callback_loop())  # keeps group alive
+        except Exception:
+            self.logger.exception("taskgroup crashed")
+        finally:
+            self.logger.debug("taskgroup stopped")
 
-    def add_channel(self, outpoint: str, address: str) -> None:
-        assert isinstance(outpoint, str)
-        assert isinstance(address, str)
-        cb = lambda: self.check_onchain_situation(address, outpoint)
-        self.add_callback(address, cb)
+    async def _callback_loop(self):
+        """
+        Triggers the callbacks if no event has triggered them within the
+        last MAX_CALLBACK_TRIGGER_DELAY_SEC (e.g. during a prolonged time without new blocks)
+        """
+        ts_start = now()
+        while True:
+            max_delay = self.MAX_CALLBACK_TRIGGER_DELAY_SEC
+            if now() - ts_start < max_delay:
+                max_delay /= 10  # if wallet just recently opened, be much more eager
+            time_since_last_cb_trigger = now() - self._last_callback_trigger_ts
+            if time_since_last_cb_trigger > max_delay:
+                await self.trigger_callbacks()
+            await asyncio.sleep(self.CALLBACK_LOOP_POLL_INTERVAL_SEC)
 
-    async def unwatch_channel(self, address, funding_outpoint):
-        self.logger.info(f'unwatching {funding_outpoint}')
-        self.remove_callback(address)
-
-    def remove_callback(self, address):
+    def remove_callback(self, address: str) -> None:
         self.callbacks.pop(address, None)
 
-    def add_callback(self, address, callback):
-        self.add_address(address)
+    def add_callback(
+        self,
+        address: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        subscribe: bool = True,
+    ) -> None:
+        if subscribe:
+            # FIXME even when called with subscribe=False, adb likely already has this address.
+            #   wallet.adb==lnwatcher.adb, and adb.db==wallet.db, which is persisted to disk.
+            #   A call to adb.add_address at any time will add the address to the persistent DB.
+            #   So in practice adb has the channel-related and swap-related addresses we *ever*
+            #   subscribed to, and will have adb.synchronizer sub to them again.
+            #   (even for old redeemed channels and old swaps)
+            self.adb.add_address(address)
         self.callbacks[address] = callback
 
-    @log_exceptions
-    async def on_network_update(self, event, *args):
-        if event in ('verified', 'wallet_updated'):
-            if args[0] != self:
-                return
-        if not self.synchronizer:
-            self.logger.info("synchronizer not set yet")
+    async def trigger_callbacks(self, *, requires_synchronizer: bool = True):
+        if requires_synchronizer and not self.adb.synchronizer:
+            self.logger.debug("synchronizer not set yet")
             return
         for address, callback in list(self.callbacks.items()):
-            await callback()
+            try:
+                await callback()
+            except Exception:
+                self.logger.exception(f"LNWatcher callback failed {address=}")
+        # send callback to GUI
+        util.trigger_callback('wallet_updated', self.lnworker.wallet)
+        self._last_callback_trigger_ts = now()
 
-    async def check_onchain_situation(self, address, funding_outpoint):
+    @event_listener
+    async def on_event_blockchain_updated(self, *args):
+        await self.trigger_callbacks()
+
+    @event_listener
+    async def on_event_adb_added_tx(self, adb, tx_hash, tx):
+        # called if we add local tx
+        if adb != self.adb:
+            return
+        await self.trigger_callbacks()
+
+    @event_listener
+    async def on_event_adb_added_verified_tx(self, adb, tx_hash):
+        if adb != self.adb:
+            return
+        await self.trigger_callbacks()
+
+    @event_listener
+    async def on_event_adb_set_up_to_date(self, adb):
+        if adb != self.adb:
+            return
+        await self.trigger_callbacks()
+
+    def add_channel(self, chan: 'AbstractChannel') -> None:
+        outpoint = chan.funding_outpoint.to_str()
+        address = chan.get_funding_address()
+        callback = lambda: self.check_onchain_situation(address, outpoint)
+        self.add_callback(address, callback, subscribe=chan.need_to_subscribe())
+
+    @ignore_exceptions
+    @log_exceptions
+    async def check_onchain_situation(self, address: str, funding_outpoint: str) -> None:
         # early return if address has not been added yet
-        if not self.is_mine(address):
+        if not self.adb.is_mine(address):
             return
-        spenders = self.inspect_tx_candidate(funding_outpoint, 0)
-        # inspect_tx_candidate might have added new addresses, in which case we return ealy
-        if not self.is_up_to_date():
-            return
+        # inspect_tx_candidate might have added new addresses, in which case we return early
+        # note: maybe we should wait until adb.is_up_to_date... (?)
         funding_txid = funding_outpoint.split(':')[0]
-        funding_height = self.get_tx_height(funding_txid)
-        closing_txid = spenders.get(funding_outpoint)
-        closing_height = self.get_tx_height(closing_txid)
+        funding_height = self.adb.get_tx_height(funding_txid)
+        closing_txid = self.adb.get_spender(funding_outpoint)
+        closing_height = self.adb.get_tx_height(closing_txid)
         if closing_txid:
-            closing_tx = self.db.get_transaction(closing_txid)
+            self.adb.subscribe_to_outputs(closing_txid)
+            closing_tx = self.adb.get_transaction(closing_txid)
             if closing_tx:
-                keep_watching = await self.do_breach_remedy(funding_outpoint, closing_tx, spenders)
+                keep_watching = await self.sweep_commitment_transaction(funding_outpoint, closing_tx)
+                if not keep_watching:
+                    self.remove_callback(address)
             else:
                 self.logger.info(f"channel {funding_outpoint} closed by {closing_txid}. still waiting for tx itself...")
                 keep_watching = True
@@ -210,247 +165,193 @@ class LNWatcher(AddressSynchronizer):
             closing_txid=closing_txid,
             closing_height=closing_height,
             keep_watching=keep_watching)
-        if not keep_watching:
-            await self.unwatch_channel(address, funding_outpoint)
-
-    async def do_breach_remedy(self, funding_outpoint, closing_tx, spenders) -> bool:
-        raise NotImplementedError()  # implemented by subclasses
-
-    async def update_channel_state(self, *, funding_outpoint: str, funding_txid: str,
-                                   funding_height: TxMinedInfo, closing_txid: str,
-                                   closing_height: TxMinedInfo, keep_watching: bool) -> None:
-        raise NotImplementedError()  # implemented by subclasses
-
-    def inspect_tx_candidate(self, outpoint, n):
-        prev_txid, index = outpoint.split(':')
-        txid = self.db.get_spent_outpoint(prev_txid, int(index))
-        result = {outpoint:txid}
-        if txid is None:
-            self.channel_status[outpoint] = 'open'
-            return result
-        if n == 0 and not self.is_deeply_mined(txid):
-            self.channel_status[outpoint] = 'closed (%d)' % self.get_tx_height(txid).conf
-        else:
-            self.channel_status[outpoint] = 'closed (deep)'
-        tx = self.db.get_transaction(txid)
-        for i, o in enumerate(tx.outputs()):
-            if o.address is None:
-                continue
-            if not self.is_mine(o.address):
-                self.add_address(o.address)
-            elif n < 2:
-                r = self.inspect_tx_candidate(txid+':%d'%i, n+1)
-                result.update(r)
-        return result
-
-    def get_tx_mined_depth(self, txid: str):
-        if not txid:
-            return TxMinedDepth.FREE
-        tx_mined_depth = self.get_tx_height(txid)
-        height, conf = tx_mined_depth.height, tx_mined_depth.conf
-        if conf > 100:
-            return TxMinedDepth.DEEP
-        elif conf > 0:
-            return TxMinedDepth.SHALLOW
-        elif height in (TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT):
-            return TxMinedDepth.MEMPOOL
-        elif height == TX_HEIGHT_LOCAL:
-            return TxMinedDepth.FREE
-        elif height > 0 and conf == 0:
-            # unverified but claimed to be mined
-            return TxMinedDepth.MEMPOOL
-        else:
-            raise NotImplementedError()
-
-    def is_deeply_mined(self, txid):
-        return self.get_tx_mined_depth(txid) == TxMinedDepth.DEEP
-
-
-class WatchTower(LNWatcher):
-
-    LOGGING_SHORTCUT = 'W'
-
-    def __init__(self, network):
-        LNWatcher.__init__(self, network)
-        self.network = network
-        self.sweepstore = SweepStore(os.path.join(self.network.config.path, "watchtower_db"), network)
-        # this maps funding_outpoints to ListenerItems, which have an event for when the watcher is done,
-        # and a queue for seeing which txs are being published
-        self.tx_progress = {} # type: Dict[str, ListenerItem]
-
-    def diagnostic_name(self):
-        return "local_tower"
-
-    async def start_watching(self):
-        # I need to watch the addresses from sweepstore
-        lst = await self.sweepstore.list_channels()
-        for outpoint, address in random_shuffled_copy(lst):
-            self.add_channel(outpoint, address)
-
-    async def do_breach_remedy(self, funding_outpoint, closing_tx, spenders):
-        keep_watching = False
-        for prevout, spender in spenders.items():
-            if spender is not None:
-                keep_watching |= not self.is_deeply_mined(spender)
-                continue
-            sweep_txns = await self.sweepstore.get_sweep_tx(funding_outpoint, prevout)
-            for tx in sweep_txns:
-                await self.broadcast_or_log(funding_outpoint, tx)
-                keep_watching = True
-        return keep_watching
-
-    async def broadcast_or_log(self, funding_outpoint: str, tx: Transaction):
-        height = self.get_tx_height(tx.txid()).height
-        if height != TX_HEIGHT_LOCAL:
-            return
-        try:
-            txid = await self.network.broadcast_transaction(tx)
-        except Exception as e:
-            self.logger.info(f'broadcast failure: txid={tx.txid()}, funding_outpoint={funding_outpoint}: {repr(e)}')
-        else:
-            self.logger.info(f'broadcast success: txid={tx.txid()}, funding_outpoint={funding_outpoint}')
-            if funding_outpoint in self.tx_progress:
-                await self.tx_progress[funding_outpoint].tx_queue.put(tx)
-            return txid
-
-    async def get_ctn(self, outpoint, addr):
-        if addr not in self.callbacks.keys():
-            self.logger.info(f'watching new channel: {outpoint} {addr}')
-            self.add_channel(outpoint, addr)
-        return await self.sweepstore.get_ctn(outpoint, addr)
-
-    def get_num_tx(self, outpoint):
-        async def f():
-            return await self.sweepstore.get_num_tx(outpoint)
-        return self.network.run_from_another_thread(f())
-
-    def list_sweep_tx(self):
-        async def f():
-            return await self.sweepstore.list_sweep_tx()
-        return self.network.run_from_another_thread(f())
-
-    def list_channels(self):
-        async def f():
-            return await self.sweepstore.list_channels()
-        return self.network.run_from_another_thread(f())
-
-    async def unwatch_channel(self, address, funding_outpoint):
-        await super().unwatch_channel(address, funding_outpoint)
-        await self.sweepstore.remove_sweep_tx(funding_outpoint)
-        await self.sweepstore.remove_channel(funding_outpoint)
-        if funding_outpoint in self.tx_progress:
-            self.tx_progress[funding_outpoint].all_done.set()
-
-    async def update_channel_state(self, *args, **kwargs):
-        pass
-
-
-
-
-class LNWalletWatcher(LNWatcher):
-
-    def __init__(self, lnworker: 'LNWallet', network: 'Network'):
-        self.network = network
-        self.lnworker = lnworker
-        LNWatcher.__init__(self, network)
 
     def diagnostic_name(self):
         return f"{self.lnworker.wallet.diagnostic_name()}-LNW"
 
-    @ignore_exceptions
-    @log_exceptions
-    async def update_channel_state(self, *, funding_outpoint: str, funding_txid: str,
-                                   funding_height: TxMinedInfo, closing_txid: str,
-                                   closing_height: TxMinedInfo, keep_watching: bool) -> None:
+    async def update_channel_state(
+            self, *, funding_outpoint: str, funding_txid: str,
+            funding_height: TxMinedInfo, closing_txid: str,
+            closing_height: TxMinedInfo, keep_watching: bool) -> None:
         chan = self.lnworker.channel_by_txo(funding_outpoint)
         if not chan:
             return
-        chan.update_onchain_state(funding_txid=funding_txid,
-                                  funding_height=funding_height,
-                                  closing_txid=closing_txid,
-                                  closing_height=closing_height,
-                                  keep_watching=keep_watching)
-        await self.lnworker.on_channel_update(chan)
+        chan.update_onchain_state(
+            funding_txid=funding_txid,
+            funding_height=funding_height,
+            closing_txid=closing_txid,
+            closing_height=closing_height,
+            keep_watching=keep_watching)
+        if closing_height.conf > 0:
+            self._pending_force_closes.pop(chan, None)
+        await self.lnworker.handle_onchain_state(chan)
 
-    async def do_breach_remedy(self, funding_outpoint, closing_tx, spenders):
+    async def sweep_commitment_transaction(self, funding_outpoint: str, closing_tx: Transaction) -> bool:
+        """This function is called when a channel was closed. In this case
+        we need to check for redeemable outputs of the commitment transaction
+        or spenders down the line (HTLC-timeout/success transactions).
+
+        Returns whether we should continue to monitor.
+
+        Side-effects:
+          - sets defaults labels
+          - populates wallet._accounting_addresses
+        """
+        assert closing_tx
         chan = self.lnworker.channel_by_txo(funding_outpoint)
         if not chan:
             return False
-        chan_id_for_log = chan.get_id_for_log()
-        # detect who closed and set sweep_info
-        sweep_info_dict = chan.sweep_ctx(closing_tx)
-        keep_watching = False if sweep_info_dict else not self.is_deeply_mined(closing_tx.txid())
-        # create and broadcast transaction
+        self._pending_force_closes.pop(chan, None)  # recomputed below
+        # detect who closed and get information about how to claim outputs
+        is_local_ctx, sweep_info_dict = chan.get_ctx_sweep_info(closing_tx)
+        # note: we need to keep watching *at least* until the closing tx is deeply mined,
+        #       possibly longer if there are TXOs to sweep
+        keep_watching = not self.adb.is_deeply_mined(closing_tx.txid())
+        # create and broadcast transactions
         for prevout, sweep_info in sweep_info_dict.items():
-            name = sweep_info.name + ' ' + chan.get_id_for_log()
-            spender_txid = spenders.get(prevout)
-            if spender_txid is not None:
-                spender_tx = self.db.get_transaction(spender_txid)
-                if not spender_tx:
-                    keep_watching = True
-                    continue
-                e_htlc_tx = chan.maybe_sweep_revoked_htlc(closing_tx, spender_tx)
-                if e_htlc_tx:
-                    spender2 = spenders.get(spender_txid+':0')
-                    if spender2:
-                        keep_watching |= not self.is_deeply_mined(spender2)
-                    else:
-                        await self.try_redeem(spender_txid+':0', e_htlc_tx, chan_id_for_log, name)
-                        keep_watching = True
-                else:
-                    keep_watching |= not self.is_deeply_mined(spender_txid)
-                    txin_idx = spender_tx.get_input_idx_that_spent_prevout(TxOutpoint.from_str(prevout))
-                    assert txin_idx is not None
-                    spender_txin = spender_tx.inputs()[txin_idx]
-                    chan.extract_preimage_from_htlc_txin(spender_txin)
-            else:
-                await self.try_redeem(prevout, sweep_info, chan_id_for_log, name)
+            try:
+                keep_watching |= self._sweep_ctx_output(prevout, sweep_info, chan, closing_tx, is_local_ctx)
+            except Exception as e:
+                # in case a single sweep crashes we keep sweeping the other outputs
+                self.logger.exception(f"failed to sweep {prevout=}")
                 keep_watching = True
         return keep_watching
 
-    @log_exceptions
-    async def try_redeem(self, prevout: str, sweep_info: 'SweepInfo', chan_id_for_log: str, name: str) -> None:
+    def _sweep_ctx_output(
+        self,
+        prevout: str,
+        sweep_info: MaybeSweepInfo,
+        chan: 'AbstractChannel',
+        closing_tx: Transaction,
+        is_local_ctx: bool,
+    ) -> bool:
+        keep_watching = False
+        local_height = self.adb.get_local_height()
         prev_txid, prev_index = prevout.split(':')
-        broadcast = True
-        local_height = self.network.get_local_height()
-        if sweep_info.cltv_expiry:
-            wanted_height = sweep_info.cltv_expiry - local_height
-            if wanted_height - local_height > 0:
-                broadcast = False
-                reason = 'waiting for {}: CLTV ({} > {}), prevout {}'.format(name, local_height, sweep_info.cltv_expiry, prevout)
-        if sweep_info.csv_delay:
-            prev_height = self.get_tx_height(prev_txid)
-            wanted_height = sweep_info.csv_delay + prev_height.height - 1
-            if wanted_height - local_height > 0:
-                broadcast = False
-                reason = 'waiting for {}: CSV ({} >= {}), prevout: {}'.format(name, prev_height.conf, sweep_info.csv_delay, prevout)
-        tx = sweep_info.gen_tx()
-        if tx is None:
-            self.logger.info(f'{name} could not claim output: {prevout}, dust')
-            return
-        txid = tx.txid()
-        self.lnworker.wallet.set_label(txid, name)
-        if broadcast:
-            await self.network.try_broadcasting(tx, name)
+        name = sweep_info.name + ' ' + chan.get_id_for_log()
+        self.lnworker.wallet.set_default_label(prevout, name)
+        if isinstance(sweep_info, KeepWatchingTXO):  # haven't yet decided if we want to sweep
+            return sweep_info.until_height > local_height
+        assert isinstance(sweep_info, SweepInfo), sweep_info
+        if not self.adb.get_transaction(prev_txid):
+            # do not keep watching if prevout does not exist
+            self.logger.info(f'prevout does not exist for {name}: {prevout}')
+            return False
+        watch_sweep_info = self.maybe_redeem(sweep_info)
+        spender_txid = self.adb.get_spender(prevout)  # note: LOCAL spenders don't count
+        spender_tx = self.adb.get_transaction(spender_txid) if spender_txid else None
+        if spender_tx:
+            # the spender might be the remote, revoked or not
+            htlc_sweepinfo = chan.maybe_sweep_htlcs(closing_tx, spender_tx)
+            if htlc_sweepinfo:
+                self.adb.subscribe_to_outputs(spender_txid)
+            for prevout2, htlc_sweep_info in htlc_sweepinfo.items():
+                self.lnworker.wallet.set_default_label(prevout2, htlc_sweep_info.name)
+                if isinstance(htlc_sweep_info, KeepWatchingTXO):  # haven't yet decided if we want to sweep
+                    keep_watching |= htlc_sweep_info.until_height > local_height
+                    continue
+                assert isinstance(htlc_sweep_info, SweepInfo), htlc_sweep_info
+                watch_htlc_sweep_info = self.maybe_redeem(htlc_sweep_info)
+                htlc_tx_spender = self.adb.get_spender(prevout2)
+                if htlc_tx_spender:
+                    keep_watching |= not self.adb.is_deeply_mined(htlc_tx_spender)
+                    self.maybe_add_accounting_address(htlc_tx_spender, htlc_sweep_info)
+                else:
+                    keep_watching |= watch_htlc_sweep_info
+            keep_watching |= not self.adb.is_deeply_mined(spender_txid)
+            self.maybe_extract_preimage(chan, spender_tx, prevout)
+            self.maybe_add_accounting_address(spender_txid, sweep_info)
         else:
-            if txid in self.lnworker.wallet.future_tx:
-                return
-            self.logger.debug(f'(chan {chan_id_for_log}) trying to redeem {name}: {prevout}')
-            self.logger.info(reason)
-            # it's OK to add local transaction, the fee will be recomputed
-            try:
-                tx_was_added = self.lnworker.wallet.add_future_tx(tx, wanted_height)
-            except Exception as e:
-                self.logger.info(f'could not add future tx: {name}. prevout: {prevout} {str(e)}')
-                tx_was_added = False
-            if tx_was_added:
-                self.logger.info(f'added future tx: {name}. prevout: {prevout}')
-                util.trigger_callback('wallet_updated', self.lnworker.wallet)
+            keep_watching |= watch_sweep_info
+        self.maybe_add_pending_forceclose(
+            chan=chan,
+            spender_txid=spender_txid,
+            is_local_ctx=is_local_ctx,
+            sweep_info=sweep_info,
+        )
+        return keep_watching
 
-    def add_verified_tx(self, tx_hash: str, info: TxMinedInfo):
-        # this method is overloaded so that we have the GUI refreshed
-        # TODO: LNWatcher should not be an AddressSynchronizer,
-        # we should use the existing wallet instead, and results would be persisted
-        super().add_verified_tx(tx_hash, info)
-        tx_mined_status = self.get_tx_height(tx_hash)
-        util.trigger_callback('verified', self.lnworker.wallet, tx_hash, tx_mined_status)
+    def get_pending_force_closes(self) -> Dict['AbstractChannel', int]:
+        return dict(self._pending_force_closes)
+
+    def maybe_redeem(self, sweep_info: 'SweepInfo') -> bool:
+        """ returns 'keep_watching' """
+        try:
+            self.lnworker.wallet.txbatcher.add_sweep_input('lnwatcher', sweep_info)
+        except BelowDustLimit:
+            self.logger.debug(f"maybe_redeem: BelowDustLimit: {sweep_info.name}")
+            # utxo is considered dust at *current* fee estimates.
+            # but maybe the fees atm are very high? We will retry later.
+            pass
+        except NoDynamicFeeEstimates:
+            self.logger.debug(f"maybe_redeem: NoDynamicFeeEstimates: {sweep_info.name}")
+            pass  # will retry later
+        if sweep_info.is_anchor():
+            return False
+        return True
+
+    def maybe_extract_preimage(self, chan: 'AbstractChannel', spender_tx: Transaction, prevout: str):
+        if not spender_tx.is_complete():
+            self.logger.info('spender tx is unsigned')
+            return
+        txin_idx = spender_tx.get_input_idx_that_spent_prevout(TxOutpoint.from_str(prevout))
+        assert txin_idx is not None
+        spender_txin = spender_tx.inputs()[txin_idx]
+        chan.extract_preimage_from_htlc_txin(
+            spender_txin,
+            is_deeply_mined=self.adb.is_deeply_mined(spender_tx.txid()),
+        )
+
+    def maybe_add_accounting_address(self, spender_txid: str, sweep_info: 'SweepInfo'):
+        spender_tx = self.adb.get_transaction(spender_txid) if spender_txid else None
+        if not spender_tx:
+            return
+        for i, txin in enumerate(spender_tx.inputs()):
+            if txin.prevout == sweep_info.txin.prevout:
+                break
+        else:
+            return
+        if sweep_info.name in ['offered-htlc', 'received-htlc']:
+            # always consider ours
+            pass
+        else:
+            witness = txin.witness_elements()
+            for sig in witness:
+                # fixme: verify sig is ours
+                witness2 = sweep_info.txin.make_witness(sig)
+                if txin.witness == witness2:
+                    break
+            else:
+                self.logger.info(f"signature not found {sweep_info.name}, {txin.prevout.to_str()}")
+                return
+        self.logger.info(f'adding txin address {sweep_info.name}, {txin.prevout.to_str()}')
+        prev_txid, prev_index = txin.prevout.to_str().split(':')
+        prev_tx = self.adb.get_transaction(prev_txid)
+        txout = prev_tx.outputs()[int(prev_index)]
+        self.lnworker.wallet._accounting_addresses.add(txout.address)
+
+    def maybe_add_pending_forceclose(
+        self,
+        *,
+        chan: 'AbstractChannel',
+        spender_txid: Optional[str],
+        is_local_ctx: bool,
+        sweep_info: 'SweepInfo',
+    ) -> None:
+        """Adds chan into dict of ongoing force-closures if the user should keep the wallet open, waiting for it.
+        (we are waiting for ctx to be confirmed and there are received htlcs)
+        """
+        if is_local_ctx and sweep_info.name == 'received-htlc':
+            their_cltv = sweep_info.their_cltv_abs
+            assert their_cltv is not None, f"missing cltv for {sweep_info}"
+            if self.adb.get_local_height() > their_cltv + REDEEM_AFTER_DOUBLE_SPENT_DELAY:
+                # We had plenty of time to sweep. The remote also had time to time out the htlc.
+                # Maybe its value has been ~dust at current and past fee levels (every time we checked).
+                # We should not keep warning the user forever.
+                return
+            tx_mined_status = self.adb.get_tx_height(spender_txid)
+            if tx_mined_status.height() == TX_HEIGHT_LOCAL:
+                self._pending_force_closes[chan] = min(
+                    their_cltv,
+                    self._pending_force_closes.get(chan, their_cltv),  # collect lowest timeout (if multiple htlcs exist)
+                )

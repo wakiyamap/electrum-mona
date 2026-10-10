@@ -2,14 +2,15 @@ import time
 from struct import pack
 from typing import Optional
 
-from electrum_mona import ecc
+import electrum_ecc as ecc
+
 from electrum_mona.i18n import _
 from electrum_mona.util import UserCancelled
 from electrum_mona.keystore import bip39_normalize_passphrase
-from electrum_mona.bip32 import BIP32Node, convert_bip32_path_to_list_of_uint32
+from electrum_mona.bip32 import BIP32Node, convert_bip32_strpath_to_intpath
 from electrum_mona.logging import Logger
 from electrum_mona.plugin import runs_in_hwd_thread
-from electrum_mona.plugins.hw_wallet.plugin import HardwareClientBase, HardwareHandlerBase
+from electrum_mona.hw_wallet.plugin import HardwareClientBase, HardwareHandlerBase
 
 
 class GuiMixin(object):
@@ -154,7 +155,7 @@ class KeepKeyClientBase(HardwareClientBase, GuiMixin, Logger):
 
     @staticmethod
     def expand_path(n):
-        return convert_bip32_path_to_list_of_uint32(n)
+        return convert_bip32_strpath_to_intpath(n)
 
     @runs_in_hwd_thread
     def cancel(self):
@@ -162,6 +163,9 @@ class KeepKeyClientBase(HardwareClientBase, GuiMixin, Logger):
         self.transport.write(self.proto.Cancel())
 
     def i4b(self, x):
+        if x < 0:
+            # hack. workaround for https://github.com/spesmilo/electrum/issues/7779
+            x += 2 ** 32
         return pack('>I', x)
 
     @runs_in_hwd_thread

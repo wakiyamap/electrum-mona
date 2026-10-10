@@ -25,11 +25,11 @@
 
 from typing import TYPE_CHECKING
 
-from PyQt5.QtWidgets import QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QVBoxLayout, QLabel
 
 from electrum_mona.i18n import _
 
-from .util import WindowModalDialog, ButtonsLineEdit, ColorScheme, Buttons, CloseButton
+from .util import WindowModalDialog, ButtonsLineEdit, ShowQRLineEdit, Buttons, CloseButton
 from .history_list import HistoryList, HistoryModel
 from .qrtextedit import ShowQRTextEdit
 
@@ -38,8 +38,8 @@ if TYPE_CHECKING:
 
 
 class AddressHistoryModel(HistoryModel):
-    def __init__(self, parent: 'ElectrumWindow', address):
-        super().__init__(parent)
+    def __init__(self, window: 'ElectrumWindow', address):
+        super().__init__(window)
         self.address = address
 
     def get_domain(self):
@@ -51,13 +51,15 @@ class AddressHistoryModel(HistoryModel):
 
 class AddressDialog(WindowModalDialog):
 
-    def __init__(self, parent: 'ElectrumWindow', address: str):
+    def __init__(self, window: 'ElectrumWindow', address: str, *, parent=None):
+        if parent is None:
+            parent = window
         WindowModalDialog.__init__(self, parent, _("Address"))
         self.address = address
-        self.parent = parent
-        self.config = parent.config
-        self.wallet = parent.wallet
-        self.app = parent.app
+        self.window = window
+        self.config = window.config
+        self.wallet = window.wallet
+        self.app = window.app
         self.saved = True
 
         self.setMinimumWidth(700)
@@ -65,11 +67,7 @@ class AddressDialog(WindowModalDialog):
         self.setLayout(vbox)
 
         vbox.addWidget(QLabel(_("Address") + ":"))
-        self.addr_e = ButtonsLineEdit(self.address)
-        self.addr_e.addCopyButton(self.app)
-        icon = "qrcode_white.png" if ColorScheme.dark_scheme else "qrcode.png"
-        self.addr_e.addButton(icon, self.show_qr, _("Show QR Code"))
-        self.addr_e.setReadOnly(True)
+        self.addr_e = ShowQRLineEdit(self.address, self.config, title=_("Address"))
         vbox.addWidget(self.addr_e)
 
         try:
@@ -79,46 +77,45 @@ class AddressDialog(WindowModalDialog):
         if pubkeys:
             vbox.addWidget(QLabel(_("Public keys") + ':'))
             for pubkey in pubkeys:
-                pubkey_e = ButtonsLineEdit(pubkey)
-                pubkey_e.addCopyButton(self.app)
-                pubkey_e.setReadOnly(True)
+                pubkey_e = ShowQRLineEdit(pubkey, self.config, title=_("Public Key"))
                 vbox.addWidget(pubkey_e)
 
         redeem_script = self.wallet.get_redeem_script(address)
         if redeem_script:
             vbox.addWidget(QLabel(_("Redeem Script") + ':'))
             redeem_e = ShowQRTextEdit(text=redeem_script, config=self.config)
-            redeem_e.addCopyButton(self.app)
+            redeem_e.addCopyButton()
             vbox.addWidget(redeem_e)
 
         witness_script = self.wallet.get_witness_script(address)
         if witness_script:
             vbox.addWidget(QLabel(_("Witness Script") + ':'))
             witness_e = ShowQRTextEdit(text=witness_script, config=self.config)
-            witness_e.addCopyButton(self.app)
+            witness_e.addCopyButton()
             vbox.addWidget(witness_e)
 
         address_path_str = self.wallet.get_address_path_str(address)
         if address_path_str:
             vbox.addWidget(QLabel(_("Derivation path") + ':'))
             der_path_e = ButtonsLineEdit(address_path_str)
-            der_path_e.addCopyButton(self.app)
+            der_path_e.addCopyButton()
             der_path_e.setReadOnly(True)
             vbox.addWidget(der_path_e)
 
-        vbox.addWidget(QLabel(_("History")))
-        addr_hist_model = AddressHistoryModel(self.parent, self.address)
-        self.hw = HistoryList(self.parent, addr_hist_model)
+        addr_hist_model = AddressHistoryModel(self.window, self.address)
+        self.hw = HistoryList(self.window, addr_hist_model)
+        self.hw.num_tx_label = QLabel('')
         addr_hist_model.set_view(self.hw)
+        vbox.addWidget(self.hw.num_tx_label)
         vbox.addWidget(self.hw)
 
         vbox.addLayout(Buttons(CloseButton(self)))
-        self.format_amount = self.parent.format_amount
+        self.format_amount = self.window.format_amount
         addr_hist_model.refresh('address dialog constructor')
 
     def show_qr(self):
         text = self.address
         try:
-            self.parent.show_qrcode(text, 'Address', parent=self)
+            self.window.show_qrcode(text, 'Address', parent=self)
         except Exception as e:
             self.show_message(repr(e))

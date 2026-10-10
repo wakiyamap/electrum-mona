@@ -6,12 +6,13 @@ import sys
 import platform
 from typing import TYPE_CHECKING
 
-from PyQt5.QtWidgets import (QComboBox, QGridLayout, QLabel, QPushButton)
+from PyQt6.QtWidgets import (QComboBox, QGridLayout, QLabel, QPushButton)
 
 from electrum_mona.plugin import BasePlugin, hook
 from electrum_mona.gui.qt.util import WaitingDialog, EnterButton, WindowModalDialog, read_QIcon
 from electrum_mona.i18n import _
 from electrum_mona.logging import get_logger
+from electrum_mona.gui.qt.util import read_QIcon_from_bytes
 
 if TYPE_CHECKING:
     from electrum_mona.gui.qt.transaction_dialog import TxDialog
@@ -48,10 +49,7 @@ class Plugin(BasePlugin):
     def requires_settings(self):
         return True
 
-    def settings_widget(self, window):
-        return EnterButton(_('Settings'), partial(self.settings_dialog, window))
-
-    def settings_dialog(self, window):
+    def settings_dialog(self, window, wallet):
         d = WindowModalDialog(window, _("Audio Modem Settings"))
 
         layout = QGridLayout(d)
@@ -72,13 +70,13 @@ class Plugin(BasePlugin):
         ok_button.clicked.connect(d.accept)
         layout.addWidget(ok_button, 1, 1)
 
-        return bool(d.exec_())
+        return bool(d.exec())
 
     @hook
     def transaction_dialog(self, dialog: 'TxDialog'):
         b = QPushButton()
-        b.setIcon(read_QIcon("speaker.png"))
-
+        icon = read_QIcon_from_bytes(self.read_file("speaker.png"))
+        b.setIcon(icon)
         def handler():
             blob = dialog.tx.serialize()
             self._send(parent=dialog, blob=blob)
@@ -87,15 +85,16 @@ class Plugin(BasePlugin):
 
     @hook
     def scan_text_edit(self, parent):
-        parent.addButton('microphone.png', partial(self._recv, parent),
-                         _("Read from microphone"))
+        icon = read_QIcon_from_bytes(self.read_file("microphone.png"))
+        parent.addButton(icon, partial(self._recv, parent), _("Read from microphone"))
 
     @hook
     def show_text_edit(self, parent):
         def handler():
             blob = str(parent.toPlainText())
             self._send(parent=parent, blob=blob)
-        parent.addButton('speaker.png', handler, _("Send to speaker"))
+        icon = read_QIcon_from_bytes(self.read_file("speaker.png"))
+        parent.addButton(icon, handler, _("Send to speaker"))
 
     def _audio_interface(self):
         interface = amodem.audio.Interface(config=self.modem_config)

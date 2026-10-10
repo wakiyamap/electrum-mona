@@ -3,8 +3,9 @@ import os
 from hashlib import sha256
 from typing import NamedTuple, Optional, Dict, Tuple
 
+from electrum_mona import crandom
 from electrum_mona.plugin import BasePlugin
-from electrum_mona.util import to_bytes, bh2u, bfh
+from electrum_mona.util import to_bytes, bfh
 
 from .hmac_drbg import DRBG
 
@@ -47,7 +48,7 @@ class RevealerPlugin(BasePlugin):
             return None
         try:
             int(txt, 16)
-        except:
+        except Exception:
             return None
         version = txt[0]
         if version not in cls.KNOWN_VERSIONS:
@@ -92,7 +93,7 @@ class RevealerPlugin(BasePlugin):
     @classmethod
     def gen_random_versioned_seed(cls):
         version = cls.LATEST_VERSION
-        hex_seed = bh2u(os.urandom(16))
+        hex_seed = crandom.get_rand_bytes(16).hex()
         checksum = cls.code_hashid(version + hex_seed)
         return VersionedSeed(version=version.upper(),
                              seed=hex_seed.upper(),

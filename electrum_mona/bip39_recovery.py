@@ -2,20 +2,23 @@
 # Distributed under the MIT software license, see the accompanying
 # file LICENCE or http://www.opensource.org/licenses/mit-license.php
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
+import itertools
 
 from . import bitcoin
 from .constants import BIP39_WALLET_FORMATS
 from .bip32 import BIP32_PRIME, BIP32Node
-from .bip32 import convert_bip32_path_to_list_of_uint32 as bip32_str_to_ints
+from .bip32 import convert_bip32_strpath_to_intpath as bip32_str_to_ints
 from .bip32 import convert_bip32_intpath_to_strpath as bip32_ints_to_str
-from .util import OldTaskGroup
+from .util import OldTaskGroup, NetworkOfflineException
 
 if TYPE_CHECKING:
     from .network import Network
 
 
-async def account_discovery(network: 'Network', get_account_xpub):
+async def account_discovery(network: Optional['Network'], get_account_xpub):
+    if network is None:
+        raise NetworkOfflineException()
     async with OldTaskGroup() as group:
         account_scan_tasks = []
         for wallet_format in BIP39_WALLET_FORMATS:
@@ -44,11 +47,15 @@ async def scan_for_active_accounts(network: 'Network', get_account_xpub, wallet_
 
 
 async def account_has_history(network: 'Network', account_node: BIP32Node, script_type: str) -> bool:
-    gap_limit = 20
+    # note: scan both receiving and change addresses. some wallets send change across accounts.
+    path_suffixes = itertools.chain(
+        itertools.product((0,), range(20)),  # ad-hoc gap limits
+        itertools.product((1,), range(10)),
+    )
     async with OldTaskGroup() as group:
         get_history_tasks = []
-        for address_index in range(gap_limit):
-            address_node = account_node.subkey_at_public_derivation("0/" + str(address_index))
+        for path_suffix in path_suffixes:
+            address_node = account_node.subkey_at_public_derivation(path_suffix)
             pubkey = address_node.eckey.get_public_key_hex()
             address = bitcoin.pubkey_to_address(script_type, pubkey)
             script = bitcoin.address_to_script(address)

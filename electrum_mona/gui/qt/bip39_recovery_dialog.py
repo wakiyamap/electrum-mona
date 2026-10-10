@@ -2,23 +2,28 @@
 # Distributed under the MIT software license, see the accompanying
 # file LICENCE or http://www.opensource.org/licenses/mit-license.php
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QLabel, QListWidget, QListWidgetItem
+import asyncio
+import concurrent.futures
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QListWidget, QListWidgetItem
 
 from electrum_mona.i18n import _
 from electrum_mona.network import Network
 from electrum_mona.bip39_recovery import account_discovery
 from electrum_mona.logging import get_logger
+from electrum_mona.util import get_asyncio_loop, UserFacingException
 
-from .util import WindowModalDialog, MessageBoxMixin, TaskThread, Buttons, CancelButton, OkButton
+from electrum_mona.gui.common_qt.util import TaskThread
 
+from .util import WindowModalDialog, Buttons, CancelButton, OkButton
 
 _logger = get_logger(__name__)
 
 
 class Bip39RecoveryDialog(WindowModalDialog):
 
-    ROLE_ACCOUNT = Qt.UserRole
+    ROLE_ACCOUNT = Qt.ItemDataRole.UserRole
 
     def __init__(self, parent: QWidget, get_account_xpub, on_account_select):
         self.get_account_xpub = get_account_xpub
@@ -29,15 +34,27 @@ class Bip39RecoveryDialog(WindowModalDialog):
         self.content = QVBoxLayout()
         self.content.addWidget(QLabel(_('Scanning common paths for existing accounts...')))
         vbox.addLayout(self.content)
+
+        self.thread = TaskThread(self)
+        self.thread.finished.connect(self.deleteLater) # see #3956
+        network = Network.get_instance()
+        coro = account_discovery(network, self.get_account_xpub)
+        fut = asyncio.run_coroutine_threadsafe(coro, get_asyncio_loop())
+        self.thread.add(
+            fut.result,
+            on_success=self.on_recovery_success,
+            on_error=self.on_recovery_error,
+            cancel=fut.cancel,
+        )
+
         self.ok_button = OkButton(self)
         self.ok_button.clicked.connect(self.on_ok_button_click)
         self.ok_button.setEnabled(False)
-        vbox.addLayout(Buttons(CancelButton(self), self.ok_button))
+        cancel_button = CancelButton(self)
+        cancel_button.clicked.connect(fut.cancel)
+        vbox.addLayout(Buttons(cancel_button, self.ok_button))
         self.finished.connect(self.on_finished)
         self.show()
-        self.thread = TaskThread(self)
-        self.thread.finished.connect(self.deleteLater) # see #3956
-        self.thread.add(self.recovery, self.on_recovery_success, None, self.on_recovery_error)
 
     def on_finished(self):
         self.thread.stop()
@@ -46,11 +63,6 @@ class Bip39RecoveryDialog(WindowModalDialog):
         item = self.list.currentItem()
         account = item.data(self.ROLE_ACCOUNT)
         self.on_account_select(account)
-
-    def recovery(self):
-        network = Network.get_instance()
-        coroutine = account_discovery(network, self.get_account_xpub)
-        return network.run_from_another_thread(coroutine)
 
     def on_recovery_success(self, accounts):
         self.clear_content()
@@ -67,9 +79,16 @@ class Bip39RecoveryDialog(WindowModalDialog):
         self.content.addWidget(self.list)
 
     def on_recovery_error(self, exc_info):
+        e = exc_info[1]
+        if isinstance(e, concurrent.futures.CancelledError):
+            return
         self.clear_content()
-        self.content.addWidget(QLabel(_('Error: Account discovery failed.')))
-        _logger.error(f"recovery error", exc_info=exc_info)
+        msg = _('Error: Account discovery failed.')
+        if isinstance(e, UserFacingException):
+            msg += f"\n{e}"
+        else:
+            _logger.error(f"recovery error", exc_info=exc_info)
+        self.content.addWidget(QLabel(msg))
 
     def clear_content(self):
         for i in reversed(range(self.content.count())):

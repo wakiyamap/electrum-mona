@@ -3,14 +3,17 @@
 from decimal import Decimal
 from typing import Union
 
-from PyQt5.QtCore import pyqtSignal, Qt, QSize
-from PyQt5.QtGui import QPalette, QPainter
-from PyQt5.QtWidgets import (QLineEdit, QStyle, QStyleOptionFrame, QSizePolicy)
+from PyQt6.QtCore import pyqtSignal, Qt, QSize
+from PyQt6.QtGui import QPainter
+from PyQt6.QtWidgets import (QLineEdit, QStyle, QStyleOptionFrame, QSizePolicy)
 
 from .util import char_width_in_lineedit, ColorScheme
 
 from electrum_mona.util import (format_satoshis_plain, decimal_point_to_base_unit_name,
-                           FEERATE_PRECISION, quantize_feerate)
+                           FEERATE_PRECISION, quantize_feerate, DECIMAL_POINT, UI_UNIT_NAME_FEERATE_SAT_PER_VBYTE)
+from electrum_mona.bitcoin import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
+
+_NOT_GIVEN = object()  # sentinel value
 
 
 class FreezableLineEdit(QLineEdit):
@@ -18,8 +21,11 @@ class FreezableLineEdit(QLineEdit):
 
     def setFrozen(self, b):
         self.setReadOnly(b)
-        self.setFrame(not b)
+        self.setStyleSheet(ColorScheme.LIGHTBLUE.as_stylesheet(True) if b else '')
         self.frozen.emit()
+
+    def isFrozen(self):
+        return self.isReadOnly()
 
 
 class SizedFreezableLineEdit(FreezableLineEdit):
@@ -27,7 +33,7 @@ class SizedFreezableLineEdit(FreezableLineEdit):
     def __init__(self, *, width: int, parent=None):
         super().__init__(parent)
         self._width = width
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setMaximumWidth(width)
 
     def sizeHint(self) -> QSize:
@@ -38,7 +44,7 @@ class SizedFreezableLineEdit(FreezableLineEdit):
 class AmountEdit(SizedFreezableLineEdit):
     shortcut = pyqtSignal()
 
-    def __init__(self, base_unit, is_int=False, parent=None):
+    def __init__(self, base_unit, is_int=False, parent=None, *, max_amount=None):
         # This seems sufficient for hundred-BTC amounts with 8 decimals
         width = 16 * char_width_in_lineedit()
         super().__init__(width=width, parent=parent)
@@ -47,6 +53,7 @@ class AmountEdit(SizedFreezableLineEdit):
         self.is_int = is_int
         self.is_shortcut = False
         self.extra_precision = 0
+        self.max_amount = max_amount
 
     def decimal_point(self):
         return 8
@@ -61,13 +68,16 @@ class AmountEdit(SizedFreezableLineEdit):
             return
         pos = self.cursorPosition()
         chars = '0123456789'
-        if not self.is_int: chars +='.'
+        if not self.is_int: chars += DECIMAL_POINT
         s = ''.join([i for i in text if i in chars])
         if not self.is_int:
-            if '.' in s:
-                p = s.find('.')
-                s = s.replace('.','')
-                s = s[:p] + '.' + s[p:p+self.max_precision()]
+            if DECIMAL_POINT in s:
+                p = s.find(DECIMAL_POINT)
+                s = s.replace(DECIMAL_POINT, '')
+                s = s[:p] + DECIMAL_POINT + s[p:p+self.max_precision()]
+        if self.max_amount:
+            if (amt := self._get_amount_from_text(s)) and amt >= self.max_amount:
+                s = self._get_text_from_amount(self.max_amount)
         self.setText(s)
         # setText sets Modified to False.  Instead we want to remember
         # if updates were because of user modification.
@@ -79,36 +89,50 @@ class AmountEdit(SizedFreezableLineEdit):
         if self.base_unit:
             panel = QStyleOptionFrame()
             self.initStyleOption(panel)
-            textRect = self.style().subElementRect(QStyle.SE_LineEditContents, panel, self)
+            textRect = self.style().subElementRect(QStyle.SubElement.SE_LineEditContents, panel, self)
             textRect.adjust(2, 0, -10, 0)
             painter = QPainter(self)
             painter.setPen(ColorScheme.GRAY.as_color())
-            painter.drawText(textRect, int(Qt.AlignRight | Qt.AlignVCenter), self.base_unit())
+            painter.drawText(textRect, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), self.base_unit())
 
-    def get_amount(self) -> Union[None, Decimal, int]:
+    def _get_amount_from_text(self, text: str) -> Union[None, Decimal, int]:
         try:
-            return (int if self.is_int else Decimal)(str(self.text()))
-        except:
+            text = text.replace(DECIMAL_POINT, '.')
+            return (int if self.is_int else Decimal)(text)
+        except Exception:
             return None
 
-    def setAmount(self, x):
-        self.setText("%d"%x)
+    def get_amount(self) -> Union[None, Decimal, int]:
+        amt = self._get_amount_from_text(str(self.text()))
+        if self.max_amount and amt and amt >= self.max_amount:
+            return self.max_amount
+        return amt
+
+    def _get_text_from_amount(self, amount) -> str:
+        return "%d" % amount
+
+    def setAmount(self, amount):
+        text = self._get_text_from_amount(amount)
+        self.setText(text)
 
 
 class BTCAmountEdit(AmountEdit):
 
-    def __init__(self, decimal_point, is_int=False, parent=None):
-        AmountEdit.__init__(self, self._base_unit, is_int, parent)
+    def __init__(self, decimal_point, is_int=False, parent=None, *, max_amount=_NOT_GIVEN):
+        if max_amount is _NOT_GIVEN:
+            max_amount = TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN
+        AmountEdit.__init__(self, self._base_unit, is_int, parent, max_amount=max_amount)
         self.decimal_point = decimal_point
 
     def _base_unit(self):
         return decimal_point_to_base_unit_name(self.decimal_point())
 
-    def get_amount(self):
+    def _get_amount_from_text(self, text):
         # returns amt in satoshis
         try:
-            x = Decimal(str(self.text()))
-        except:
+            text = text.replace(DECIMAL_POINT, '.')
+            x = Decimal(text)
+        except Exception:
             return None
         # scale it to max allowed precision, make it an int
         power = pow(10, self.max_precision())
@@ -120,27 +144,34 @@ class BTCAmountEdit(AmountEdit):
         amount = Decimal(max_prec_amount) / pow(10, self.max_precision()-self.decimal_point())
         return Decimal(amount) if not self.is_int else int(amount)
 
+    def _get_text_from_amount(self, amount_sat):
+        text = format_satoshis_plain(amount_sat, decimal_point=self.decimal_point())
+        text = text.replace('.', DECIMAL_POINT)
+        return text
+
     def setAmount(self, amount_sat):
         if amount_sat is None:
             self.setText(" ")  # Space forces repaint in case units changed
         else:
-            self.setText(format_satoshis_plain(amount_sat, decimal_point=self.decimal_point()))
+            text = self._get_text_from_amount(amount_sat)
+            self.setText(text)
+        self.setFrozen(self.isFrozen()) # re-apply styling, as it is nuked by setText (?)
         self.repaint()  # macOS hack for #6269
 
 
 class FeerateEdit(BTCAmountEdit):
 
-    def __init__(self, decimal_point, is_int=False, parent=None):
-        super().__init__(decimal_point, is_int, parent)
+    def __init__(self, decimal_point, is_int=False, parent=None, *, max_amount=_NOT_GIVEN):
+        super().__init__(decimal_point, is_int, parent, max_amount=max_amount)
         self.extra_precision = FEERATE_PRECISION
 
     def _base_unit(self):
-        return 'sat/byte'
+        return UI_UNIT_NAME_FEERATE_SAT_PER_VBYTE
 
-    def get_amount(self):
-        sat_per_byte_amount = BTCAmountEdit.get_amount(self)
+    def _get_amount_from_text(self, text):
+        sat_per_byte_amount = super()._get_amount_from_text(text)
         return quantize_feerate(sat_per_byte_amount)
 
-    def setAmount(self, amount):
+    def _get_text_from_amount(self, amount):
         amount = quantize_feerate(amount)
-        super().setAmount(amount)
+        return super()._get_text_from_amount(amount)

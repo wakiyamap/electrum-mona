@@ -1,4 +1,3 @@
-
 # source: http://stackoverflow.com/questions/2758159/how-to-embed-a-python-interpreter-in-a-pyqt-widget
 
 import sys
@@ -6,14 +5,14 @@ import os
 import re
 import traceback
 
-from PyQt5 import QtCore
-from PyQt5 import QtGui
-from PyQt5 import QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import Qt
 
 from electrum_mona import util
 from electrum_mona.i18n import _
+from electrum_mona.base_crash_reporter import taint_reports_by_console_usage
 
-from .util import MONOSPACE_FONT
+from .util import MONOSPACE_FONT, font_height
 
 # sys.ps1 and sys.ps2 are only declared if an interpreter is in interactive mode.
 sys.ps1 = '>>> '
@@ -32,11 +31,11 @@ class OverlayLabel(QtWidgets.QLabel):
     '''
     def __init__(self, text, parent):
         super().__init__(text, parent)
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(max(150, 10 * font_height()))
         self.setGeometry(0, 0, self.width(), self.height())
         self.setStyleSheet(self.STYLESHEET)
         self.setMargin(0)
-        parent.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        parent.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setWordWrap(True)
 
     def mousePressEvent(self, e):
@@ -48,17 +47,22 @@ class OverlayLabel(QtWidgets.QLabel):
 
 
 class Console(QtWidgets.QPlainTextEdit):
+    DEFAULT_FONT_SIZE = 10
+    MIN_FONT_SIZE = 6
+    MAX_FONT_SIZE = 32
+
     def __init__(self, parent=None):
         QtWidgets.QPlainTextEdit.__init__(self, parent)
 
         self.history = []
         self.namespace = {}
         self.construct = []
+        self.font_size = self.DEFAULT_FONT_SIZE
 
         self.setGeometry(50, 75, 600, 400)
-        self.setWordWrapMode(QtGui.QTextOption.WrapAnywhere)
+        self.setWordWrapMode(QtGui.QTextOption.WrapMode.WrapAnywhere)
         self.setUndoRedoEnabled(False)
-        self.document().setDefaultFont(QtGui.QFont(MONOSPACE_FONT, 10, QtGui.QFont.Normal))
+        self.setFont(QtGui.QFont(MONOSPACE_FONT, self.font_size, QtGui.QFont.Weight.Normal))
         self.newPrompt("")  # make sure there is always a prompt, even before first server.banner
 
         self.updateNamespace({'run':self.run_script})
@@ -72,6 +76,11 @@ class Console(QtWidgets.QPlainTextEdit):
         )
         self.messageOverlay = OverlayLabel(warning_text, self)
 
+    def set_font_size(self, size: int):
+        size = max(self.MIN_FONT_SIZE, min(self.MAX_FONT_SIZE, size))
+        self.font_size = size
+        self.setFont(QtGui.QFont(MONOSPACE_FONT, self.font_size, QtGui.QFont.Weight.Normal))
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         vertical_scrollbar_width = self.verticalScrollBar().width() * self.verticalScrollBar().isVisible()
@@ -84,7 +93,7 @@ class Console(QtWidgets.QPlainTextEdit):
         with open(filename) as f:
             script = f.read()
 
-        self.exec_command(script)
+        self._exec_command(script)
 
     def updateNamespace(self, namespace):
         self.namespace.update(namespace)
@@ -114,7 +123,7 @@ class Console(QtWidgets.QPlainTextEdit):
         self.completions_visible = False
 
         self.appendPlainText(prompt)
-        self.moveCursor(QtGui.QTextCursor.End)
+        self.moveCursor(QtGui.QTextCursor.MoveOperation.End)
 
     def getCommand(self, *, strip=True):
         doc = self.document()
@@ -130,13 +139,13 @@ class Console(QtWidgets.QPlainTextEdit):
 
         doc = self.document()
         curr_line = doc.findBlockByLineNumber(doc.lineCount() - 1).text()
-        self.moveCursor(QtGui.QTextCursor.End)
+        self.moveCursor(QtGui.QTextCursor.MoveOperation.End)
         for i in range(len(curr_line) - len(sys.ps1)):
-            self.moveCursor(QtGui.QTextCursor.Left, QtGui.QTextCursor.KeepAnchor)
+            self.moveCursor(QtGui.QTextCursor.MoveOperation.Left, QtGui.QTextCursor.MoveMode.KeepAnchor)
 
         self.textCursor().removeSelectedText()
         self.textCursor().insertText(command)
-        self.moveCursor(QtGui.QTextCursor.End)
+        self.moveCursor(QtGui.QTextCursor.MoveOperation.End)
 
     def show_completions(self, completions):
         if self.completions_visible:
@@ -152,7 +161,7 @@ class Console(QtWidgets.QPlainTextEdit):
         c.insertText(t)
         self.completions_end = c.position()
 
-        self.moveCursor(QtGui.QTextCursor.End)
+        self.moveCursor(QtGui.QTextCursor.MoveOperation.End)
         self.completions_visible = True
 
     def hide_completions(self):
@@ -163,7 +172,7 @@ class Console(QtWidgets.QPlainTextEdit):
         l = self.completions_end - self.completions_pos
         for x in range(l): c.deleteChar()
 
-        self.moveCursor(QtGui.QTextCursor.End)
+        self.moveCursor(QtGui.QTextCursor.MoveOperation.End)
         self.completions_visible = False
 
     def getConstruct(self, command):
@@ -187,6 +196,8 @@ class Console(QtWidgets.QPlainTextEdit):
             return
 
         if command and (not self.history or self.history[-1] != command):
+            while len(self.history) >= 50:
+                self.history.remove(self.history[0])
             self.history.append(command)
         self.history_index = len(self.history)
 
@@ -209,9 +220,9 @@ class Console(QtWidgets.QPlainTextEdit):
         return c.position() - c.block().position() - len(sys.ps1)
 
     def setCursorPosition(self, position):
-        self.moveCursor(QtGui.QTextCursor.StartOfLine)
+        self.moveCursor(QtGui.QTextCursor.MoveOperation.StartOfLine)
         for i in range(len(sys.ps1) + position):
-            self.moveCursor(QtGui.QTextCursor.Right)
+            self.moveCursor(QtGui.QTextCursor.MoveOperation.Right)
 
     def run_command(self):
         command = self.getCommand()
@@ -220,14 +231,15 @@ class Console(QtWidgets.QPlainTextEdit):
         command = self.getConstruct(command)
 
         if command:
-            self.exec_command(command)
+            self._exec_command(command)
         self.newPrompt('')
         self.set_json(False)
 
-    def exec_command(self, command):
+    def _exec_command(self, command):
         tmp_stdout = sys.stdout
+        taint_reports_by_console_usage()
 
-        class stdoutProxy():
+        class StdoutProxy:
             def __init__(self, write_func):
                 self.write_func = write_func
                 self.skip = False
@@ -242,12 +254,12 @@ class Console(QtWidgets.QPlainTextEdit):
                     QtCore.QCoreApplication.processEvents()
                 self.skip = not self.skip
 
-        if type(self.namespace.get(command)) == type(lambda:None):
+        if type(self.namespace.get(command)) == type(lambda: None):
             self.appendPlainText("'{}' is a function. Type '{}()' to use it in the Python console."
                                  .format(command, command))
             return
 
-        sys.stdout = stdoutProxy(self.appendPlainText)
+        sys.stdout = StdoutProxy(self.appendPlainText)
         try:
             try:
                 # eval is generally considered bad practice. use it wisely!
@@ -262,43 +274,55 @@ class Console(QtWidgets.QPlainTextEdit):
                 exec(command, self.namespace, self.namespace)
         except SystemExit:
             self.close()
-        except BaseException:
-            traceback_lines = traceback.format_exc().split('\n')
-            # Remove traceback mentioning this file, and a linebreak
-            for i in (3,2,1,-1):
-                traceback_lines.pop(i)
-            self.appendPlainText('\n'.join(traceback_lines))
+        except BaseException as e:
+            te = traceback.TracebackException.from_exception(e)
+            # rm part of traceback mentioning this file.
+            # (note: we rm stack items before converting to str, instead of removing lines from the str,
+            #        as this is more reliable. The latter would differ whether the traceback has source text lines,
+            #        which is not always the case.)
+            te.stack = traceback.StackSummary.from_list(te.stack[1:])
+            tb_str = "".join(te.format())
+            # rm last linebreak:
+            if tb_str.endswith("\n"):
+                tb_str = tb_str[:-1]
+            self.appendPlainText(tb_str)
         sys.stdout = tmp_stdout
 
     def keyPressEvent(self, event):
-        if event.key() == QtCore.Qt.Key_Tab:
+        if event.key() == Qt.Key.Key_Tab:
             self.completions()
             return
 
         self.hide_completions()
 
-        if event.key() in (QtCore.Qt.Key_Enter, QtCore.Qt.Key_Return):
+        if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
             self.run_command()
             return
-        if event.key() == QtCore.Qt.Key_Home:
+        if event.key() == Qt.Key.Key_Home:
             self.setCursorPosition(0)
             return
-        if event.key() == QtCore.Qt.Key_PageUp:
+        if event.key() == Qt.Key.Key_PageUp:
             return
-        elif event.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Backspace):
+        elif event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Backspace):
             if self.getCursorPosition() == 0:
                 return
-        elif event.key() == QtCore.Qt.Key_Up:
+        elif event.key() == Qt.Key.Key_Up:
             self.setCommand(self.getPrevHistoryEntry())
             return
-        elif event.key() == QtCore.Qt.Key_Down:
+        elif event.key() == Qt.Key.Key_Down:
             self.setCommand(self.getNextHistoryEntry())
             return
-        elif event.key() == QtCore.Qt.Key_L and event.modifiers() == QtCore.Qt.ControlModifier:
+        elif event.key() == Qt.Key.Key_L and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             self.clear()
-        elif event.key() == QtCore.Qt.Key_C and event.modifiers() == QtCore.Qt.ControlModifier:
+        elif event.key() == Qt.Key.Key_C and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             if not self.textCursor().selectedText():
                 self.keyboard_interrupt()
+        elif event.key() == Qt.Key.Key_Plus and Qt.KeyboardModifier.ControlModifier in event.modifiers():
+            self.set_font_size(self.font_size + 1)
+            return
+        elif event.key() == Qt.Key.Key_Minus and Qt.KeyboardModifier.ControlModifier in event.modifiers():
+            self.set_font_size(self.font_size - 1)
+            return
 
         super(Console, self).keyPressEvent(event)
 

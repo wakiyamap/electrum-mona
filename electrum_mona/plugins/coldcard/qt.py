@@ -1,26 +1,29 @@
-import time, os
 from functools import partial
-import copy
+from typing import TYPE_CHECKING, Sequence
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QPushButton, QLabel, QVBoxLayout, QWidget, QGridLayout
-
-from electrum_mona.gui.qt.util import (WindowModalDialog, CloseButton, Buttons, getOpenFileName,
-                                  getSaveFileName)
-from electrum_mona.gui.qt.transaction_dialog import TxDialog
-from electrum_mona.gui.qt.main_window import ElectrumWindow
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QPushButton, QLabel, QVBoxLayout, QWidget, QGridLayout
 
 from electrum_mona.i18n import _
 from electrum_mona.plugin import hook
 from electrum_mona.wallet import Multisig_Wallet
-from electrum_mona.transaction import PartialTransaction
+from electrum_mona.keystore import Hardware_KeyStore
+from electrum_mona.util import ChoiceItem
+
+from electrum_mona.hw_wallet.qt import QtHandlerBase, QtPluginBase
+from electrum_mona.hw_wallet.plugin import only_hook_if_libraries_available
+
+from electrum_mona.gui.qt.wizard.wallet import WCScriptAndDerivation, WCHWXPub, WCHWUninitialized, WCHWUnlock
+from electrum_mona.gui.qt.util import WindowModalDialog, CloseButton, getOpenFileName, getSaveFileName, RichLabel
+from electrum_mona.gui.qt.main_window import ElectrumWindow
 
 from .coldcard import ColdcardPlugin, xfp2str
-from ..hw_wallet.qt import QtHandlerBase, QtPluginBase
-from ..hw_wallet.plugin import only_hook_if_libraries_available
 
+if TYPE_CHECKING:
+    from electrum_mona.gui.qt.wizard.wallet import QENewWalletWizard
 
 CC_DEBUG = False
+
 
 class Plugin(ColdcardPlugin, QtPluginBase):
     icon_unpaired = "coldcard_unpaired.png"
@@ -29,41 +32,80 @@ class Plugin(ColdcardPlugin, QtPluginBase):
     def create_handler(self, window):
         return Coldcard_Handler(window)
 
-    @only_hook_if_libraries_available
-    @hook
-    def receive_menu(self, menu, addrs, wallet):
-        # Context menu on each address in the Addresses Tab, right click...
-        if len(addrs) != 1:
-            return
-        for keystore in wallet.get_keystores():
-            if type(keystore) == self.keystore_class:
-                def show_address(keystore=keystore):
-                    keystore.thread.add(partial(self.show_address, wallet, addrs[0], keystore=keystore))
-                device_name = "{} ({})".format(self.device, keystore.label)
-                menu.addAction(_("Show on {}").format(device_name), show_address)
+    def trim_file_suffix(self, path):
+        return path.rsplit('.', 1)[0]
 
     @only_hook_if_libraries_available
     @hook
-    def wallet_info_buttons(self, main_window, dialog):
+    def receive_menu(self, menu, addrs, wallet):
+        if len(addrs) != 1:
+            return
+        self._add_menu_action(menu, addrs[0], wallet)
+
+    @only_hook_if_libraries_available
+    @hook
+    def transaction_dialog_address_menu(self, menu, addr, wallet):
+        self._add_menu_action(menu, addr, wallet)
+
+    @only_hook_if_libraries_available
+    @hook
+    def wallet_info_buttons(self, main_window: 'ElectrumWindow', dialog):
         # user is about to see the "Wallet Information" dialog
         # - add a button if multisig wallet, and a Coldcard is a cosigner.
+        assert isinstance(main_window, ElectrumWindow), f"{type(main_window)}"
+
+        buttons = []
         wallet = main_window.wallet
 
         if type(wallet) is not Multisig_Wallet:
             return
 
-        if not any(type(ks) == self.keystore_class for ks in wallet.get_keystores()):
+        coldcard_keystores = [
+            ks
+            for ks in wallet.get_keystores()
+            if type(ks) == self.keystore_class
+        ]
+        if not coldcard_keystores:
             # doesn't involve a Coldcard wallet, hide feature
             return
 
-        btn = QPushButton(_("Export for Coldcard"))
-        btn.clicked.connect(lambda unused: self.export_multisig_setup(main_window, wallet))
+        btn_export = QPushButton(_("Export multisig for Coldcard as file"))
+        btn_export.clicked.connect(lambda unused: self.export_multisig_setup(main_window, wallet))
+        buttons.append(btn_export)
+        btn_import_usb = QPushButton(_("Export multisig to Coldcard via USB"))
+        btn_import_usb.clicked.connect(lambda unused: self.import_multisig_wallet_to_cc(main_window, coldcard_keystores))
+        buttons.append(btn_import_usb)
+        return buttons
 
-        return btn
+    def import_multisig_wallet_to_cc(self, main_window: 'ElectrumWindow', coldcard_keystores: Sequence[Hardware_KeyStore]):
+        from io import StringIO
+        from ckcc.protocol import CCProtocolPacker
+
+        index = main_window.query_choice(
+            _("Please select which {} device to use:").format(self.device),
+            [ChoiceItem(key=i, label=ks.label) for i, ks in enumerate(coldcard_keystores)]
+        )
+        if index is not None:
+            selected_keystore = coldcard_keystores[index]
+            client = self.get_client(selected_keystore, force_pair=True, allow_user_interaction=False)
+            if client is None:
+                main_window.show_error("{} not connected.").format(selected_keystore.label)
+                return
+
+            wallet = main_window.wallet
+            sio = StringIO()
+            basename = self.trim_file_suffix(wallet.basename())
+            ColdcardPlugin.export_ms_wallet(wallet, sio, basename)
+            sio.seek(0)
+            file_len, sha = client.dev.upload_file(sio.read().encode("utf-8"), verify=True)
+            client.dev.send_recv(CCProtocolPacker.multisig_enroll(file_len, sha))
+            main_window.show_message('\n'.join([
+                _("Wallet setup file '{}' imported successfully.").format(basename),
+                _("Confirm import on your {} device.").format(selected_keystore.label)
+            ]))
 
     def export_multisig_setup(self, main_window, wallet):
-
-        basename = wallet.basename().rsplit('.', 1)[0]        # trim .json
+        basename = self.trim_file_suffix(wallet.basename())
         name = f'{basename}-cc-export.txt'.replace(' ', '-')
         fileName = getSaveFileName(
             parent=main_window,
@@ -75,26 +117,30 @@ class Plugin(ColdcardPlugin, QtPluginBase):
         if fileName:
             with open(fileName, "wt") as f:
                 ColdcardPlugin.export_ms_wallet(wallet, f, basename)
-            main_window.show_message(_("Wallet setup file exported successfully"))
+            main_window.show_message(_("Wallet setup file '{}' exported successfully").format(name))
 
     def show_settings_dialog(self, window, keystore):
         # When they click on the icon for CC we come here.
         # - doesn't matter if device not connected, continue
-        CKCCSettingsDialog(window, self, keystore).exec_()
+        CKCCSettingsDialog(window, self, keystore).exec()
+
+    # insert coldcard pages in new wallet wizard
+    def extend_wizard(self, wizard: 'QENewWalletWizard'):
+        super().extend_wizard(wizard)
+        views = {
+            'coldcard_start': {'gui': WCScriptAndDerivation},
+            'coldcard_xpub': {'gui': WCHWXPub},
+            'coldcard_not_initialized': {'gui': WCHWUninitialized},
+            'coldcard_unlock': {'gui': WCHWUnlock}
+        }
+        wizard.navmap_merge(views)
 
 
 class Coldcard_Handler(QtHandlerBase):
+    MESSAGE_DIALOG_TITLE = _("Coldcard Status")
 
     def __init__(self, win):
         super(Coldcard_Handler, self).__init__(win, 'Coldcard')
-
-    def message_dialog(self, msg):
-        self.clear_dialog()
-        self.dialog = dialog = WindowModalDialog(self.top_level_window(), _("Coldcard Status"))
-        l = QLabel(msg)
-        vbox = QVBoxLayout(dialog)
-        vbox.addWidget(l)
-        dialog.show()
 
 
 class CKCCSettingsDialog(WindowModalDialog):
@@ -129,14 +175,12 @@ class CKCCSettingsDialog(WindowModalDialog):
         grid = QGridLayout()
         grid.setColumnStretch(2, 1)
 
-        # see <http://doc.qt.io/archives/qt-4.8/richtext-html-subset.html>
-        title = QLabel('''<center>
+        title = RichLabel('''<center>
 <span style="font-size: x-large">Coldcard Wallet</span>
 <br><span style="font-size: medium">from Coinkite Inc.</span>
 <br><a href="https://coldcardwallet.com">coldcardwallet.com</a>''')
-        title.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
 
-        grid.addWidget(title, 0,0, 1,2, Qt.AlignHCenter)
+        grid.addWidget(title, 0, 0, 1, 2, Qt.AlignmentFlag.AlignHCenter)
         y = 3
 
         rows = [
@@ -149,10 +193,10 @@ class CKCCSettingsDialog(WindowModalDialog):
         for row_num, (member_name, label) in enumerate(rows):
             # XXX we know xfp already, even if not connected
             widget = QLabel('<tt>000000000000')
-            widget.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+            widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
 
-            grid.addWidget(QLabel(label), y, 0, 1,1, Qt.AlignRight)
-            grid.addWidget(widget, y, 1, 1, 1, Qt.AlignLeft)
+            grid.addWidget(QLabel(label), y, 0, 1, 1, Qt.AlignmentFlag.AlignRight)
+            grid.addWidget(widget, y, 1, 1, 1, Qt.AlignmentFlag.AlignLeft)
             setattr(self, member_name, widget)
             y += 1
         body_layout.addLayout(grid)
@@ -211,7 +255,6 @@ class CKCCSettingsDialog(WindowModalDialog):
         from ckcc.utils import dfu_parse
         from ckcc.sigheader import FW_HEADER_SIZE, FW_HEADER_OFFSET, FW_HEADER_MAGIC
         from ckcc.protocol import CCProtocolPacker
-        from hashlib import sha256
         import struct
 
         try:
@@ -233,7 +276,7 @@ class CKCCSettingsDialog(WindowModalDialog):
             self.window.show_error("Does not appear to be a Coldcard firmware file.\n\n%s" % exc)
             return
 
-        # TODO: 
+        # TODO:
         # - detect if they are trying to downgrade; aint gonna work
         # - warn them about the reboot?
         # - length checks
@@ -247,7 +290,7 @@ class CKCCSettingsDialog(WindowModalDialog):
             # append the firmware header a second time
             result = dev.send_recv(CCProtocolPacker.upload(size, size+FW_HEADER_SIZE, hdr))
 
-            # make it reboot into bootlaoder which might install it
+            # make it reboot into bootloader which might install it
             dev.send_recv(CCProtocolPacker.reboot())
 
         self.thread.add(doit)

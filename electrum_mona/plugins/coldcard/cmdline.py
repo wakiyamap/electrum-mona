@@ -2,7 +2,7 @@ from electrum_mona.plugin import hook
 from electrum_mona.util import print_msg, raw_input, print_stderr
 from electrum_mona.logging import get_logger
 
-from ..hw_wallet.cmdline import CmdLineHandler
+from electrum_mona.hw_wallet.cmdline import CmdLineHandler
 
 from .coldcard import ColdcardPlugin
 

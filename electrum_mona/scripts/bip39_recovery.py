@@ -27,7 +27,7 @@ network.start()
 async def f():
     try:
         def get_account_xpub(account_path):
-            root_seed = bip39_to_seed(mnemonic, passphrase)
+            root_seed = bip39_to_seed(mnemonic, passphrase=passphrase)
             root_node = BIP32Node.from_rootseed(root_seed, xtype="standard")
             account_node = root_node.subkey_at_private_derivation(account_path)
             account_xpub = account_node.to_xpub()
@@ -38,3 +38,5 @@ async def f():
         stopping_fut.set_result(1)
 
 asyncio.run_coroutine_threadsafe(f(), loop)
+while loop_thread.is_alive():
+    loop_thread.join(1)

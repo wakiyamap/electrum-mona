@@ -1,19 +1,10 @@
 #!/bin/bash
 
-# Please update these carefully, some versions won't work under Wine
-NSIS_FILENAME=nsis-3.08-setup.exe
-NSIS_URL=https://downloads.sourceforge.net/project/nsis/NSIS%203/3.08/$NSIS_FILENAME
-NSIS_SHA256=bbc76be36ecb2fc00d493c91befdaf71654226ad8a4fc4dc338458916bf224d0
-
-LYRA2RE_HASH_PYTHON_URL=https://github.com/wakiyamap/lyra2re-hash-python/releases/download/1.1.2/lyra2re2_hash-1.1.2-cp39-cp39-win32.whl
-LYRA2RE_HASH_PYTHON_FILENAME=lyra2re2_hash-1.1.2-cp39-cp39-win32.whl
-LYRA2RE_HASH_PYTHON_SHA256=b21f346451324e3f09f2c153906b5f111cef8f5112934f0febdfbc0a647ddc48
-
 PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
-PYINSTALLER_COMMIT="63438b1842eacd7f081fc53f1f5212bc20b7d02e"
-# ^ latest commit from "v4" branch, somewhat after "4.10" tag
+PYINSTALLER_COMMIT="306d4d92580fea7be7ff2c89ba112cdc6f73fac1"
+# ^ tag "v6.13.0"
 
-PYTHON_VERSION=3.9.11
+PYTHON_VERSION=3.12.10
 
 
 # Let's begin!
@@ -44,7 +35,7 @@ else
 fi
 PYTHON_DOWNLOADS="$CACHEDIR/python$PYTHON_VERSION"
 mkdir -p "$PYTHON_DOWNLOADS"
-for msifile in core dev exe lib pip tools; do
+for msifile in core dev exe lib pip; do
     echo "Installing $msifile..."
     download_if_not_exist "$PYTHON_DOWNLOADS/${msifile}.msi" "https://www.python.org/ftp/python/$PYTHON_VERSION/$PYARCH/${msifile}.msi"
     download_if_not_exist "$PYTHON_DOWNLOADS/${msifile}.msi.asc" "https://www.python.org/ftp/python/$PYTHON_VERSION/$PYARCH/${msifile}.msi.asc"
@@ -57,26 +48,13 @@ break_legacy_easy_install
 info "Installing build dependencies."
 $WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
     --cache-dir "$WINE_PIP_CACHE_DIR" -r "$CONTRIB"/deterministic-build/requirements-build-base.txt
-$WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
+$WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$WINE_PIP_CACHE_DIR" -r "$CONTRIB"/deterministic-build/requirements-build-wine.txt
 
-info "Installing NSIS."
-download_if_not_exist "$CACHEDIR/$NSIS_FILENAME" "$NSIS_URL"
-verify_hash "$CACHEDIR/$NSIS_FILENAME" "$NSIS_SHA256"
-wine "$CACHEDIR/$NSIS_FILENAME" /S
-
-info "Installing lyra2re2_hash."
-download_if_not_exist "$CACHEDIR/$LYRA2RE_HASH_PYTHON_FILENAME" "$LYRA2RE_HASH_PYTHON_URL"
-verify_hash "$CACHEDIR/$LYRA2RE_HASH_PYTHON_FILENAME" "$LYRA2RE_HASH_PYTHON_SHA256"
-$WINE_PYTHON -m pip install "$CACHEDIR/$LYRA2RE_HASH_PYTHON_FILENAME"
 
 # copy already built DLLs
-cp "$DLL_TARGET_DIR/libsecp256k1-0.dll" $WINEPREFIX/drive_c/tmp/ || fail "Could not copy libsecp to its destination"
-cp "$DLL_TARGET_DIR/libzbar-0.dll" $WINEPREFIX/drive_c/tmp/ || fail "Could not copy libzbar to its destination"
-cp "$DLL_TARGET_DIR/libusb-1.0.dll" $WINEPREFIX/drive_c/tmp/ || fail "Could not copy libusb to its destination"
+cp "$DLL_TARGET_DIR"/*.dll "$WINEPREFIX/drive_c/electrum/electrum_mona/" || fail "Could not copy DLLs to destination"
 
-# copy libgcc_s_dw2-1.dll
-cp "$CONTRIB/build-wine/libgcc_s_dw2-1.dll" $WINEPREFIX/drive_c/tmp/ || fail "Could not copy libgcc to its destination"
 
 info "Building PyInstaller."
 # we build our own PyInstaller boot loader as the default one has high
@@ -89,11 +67,11 @@ info "Building PyInstaller."
     else
         fail "unexpected WIN_ARCH: $WIN_ARCH"
     fi
-    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Windows-$PYINST_ARCH/runw.exe" ]; then
+    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Windows-$PYINST_ARCH-intel/runw.exe" ]; then
         info "pyinstaller already built, skipping"
         exit 0
     fi
-    cd "$WINEPREFIX/drive_c/electrum-mona"
+    cd "$WINEPREFIX/drive_c/electrum"
     ELECTRUM_COMMIT_HASH=$(git rev-parse HEAD)
     cd "$CACHEDIR"
     rm -rf pyinstaller
@@ -114,8 +92,8 @@ info "Building PyInstaller."
                       CFLAGS="-static"
     popd
     # sanity check bootloader is there:
-    [[ -e "PyInstaller/bootloader/Windows-$PYINST_ARCH/runw.exe" ]] || fail "Could not find runw.exe in target dir!"
-) || fail "PyInstaller build failed"
+    [[ -e "PyInstaller/bootloader/Windows-$PYINST_ARCH-intel/runw.exe" ]] || fail "Could not find runw.exe in target dir!"
+)
 info "Installing PyInstaller."
 $WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-script-location ./pyinstaller
 

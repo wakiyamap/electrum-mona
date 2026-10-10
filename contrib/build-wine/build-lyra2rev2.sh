@@ -1,115 +1,85 @@
 #!/bin/bash
+#
+# This script cross-compiles the "lyra2re2_hash" python C extension (Lyra2REv2,
+# the proof-of-work of Monacoin) to Windows, and installs it into the python inside wine.
+#
+# There is no C compiler inside wine, so pip (inside wine) cannot build the sdist,
+# and there are no binary wheels on PyPI. So instead we compile the extension using the
+# mingw-w64 toolchain of the host, linking against the python DLL that is inside wine.
+# As it then looks installed to pip, the "lyra2re2-hash" line
+# of contrib/deterministic-build/requirements.txt gets skipped when that file is installed.
+#
+# env vars (set by make_win.sh):
+# - CONTRIB, CACHEDIR, WINEPREFIX, WINE_PYTHON, GCC_TRIPLET_HOST
 
-# It need wine. The version depends on python and the library, so you need to match it with your build.
-# winetrick may try to install vcrun2015(x64). Kill the description of winetrick.
-LYRA2RE_HASH_PYTHON_URL=https://github.com/wakiyamap/lyra2re-hash-python.git
-WINETRICKS_MASTER_URL=https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks
+LYRA2RE2_HASH_VERSION="1.2.0"
+LYRA2RE2_HASH_SHA256="5cc17e562a37859cbe3f7ec2825a3a84616c2e482a6fa129dd2f1f731671ab52"
+# ^ sdist on PyPI.
+# note: this version is duplicated in contrib/deterministic-build/requirements.txt
+#       and in contrib/android/p4a_recipes/lyra2re2_hash/__init__.py
+LYRA2RE2_HASH_FILENAME="lyra2re2_hash-$LYRA2RE2_HASH_VERSION.tar.gz"
+LYRA2RE2_HASH_URL="https://files.pythonhosted.org/packages/source/l/lyra2re2_hash/$LYRA2RE2_HASH_FILENAME"
 
-PYTHON_VERSION=3.9.7
-
-## These settings probably don't need change
-export WINEPREFIX=/opt/wine64
-export WINEDEBUG=-all
-
-PYTHON_FOLDER="python3"
-PYHOME="c:/$PYTHON_FOLDER"
-PYTHON="wine $PYHOME/python.exe -OO -B"
-
-# based on https://superuser.com/questions/497940/script-to-verify-a-signature-with-gpg
-function verify_signature() {
-    local file=$1 keyring=$2 out=
-    if out=$(gpg --no-default-keyring --keyring "$keyring" --status-fd 1 --verify "$file" 2>/dev/null) &&
-       echo "$out" | grep -qs "^\[GNUPG:\] VALIDSIG "; then
-        return 0
-    else
-        echo "$out" >&2
-        exit 1
-    fi
-}
-
-function verify_hash() {
-    local file=$1 expected_hash=$2
-    actual_hash=$(sha256sum $file | awk '{print $1}')
-    if [ "$actual_hash" == "$expected_hash" ]; then
-        return 0
-    else
-        echo "$file $actual_hash (unexpected hash)" >&2
-        rm "$file"
-        exit 1
-    fi
-}
-
-function download_if_not_exist() {
-    local file_name=$1 url=$2
-    if [ ! -e $file_name ] ; then
-        wget -O $file_name "$url"
-    fi
-}
-
-# Let's begin!
 set -e
 
-here="$(dirname "$(readlink -e "$0")")"
+. "$CONTRIB"/build_tools_util.sh
 
-wine 'wineboot'
+pkgname="lyra2re2_hash"
+info "Building $pkgname..."
 
+PYHOME="$WINEPREFIX/drive_c/python3"
+SITE_PACKAGES="$PYHOME/Lib/site-packages"
+BUILDDIR="$CACHEDIR/$pkgname"
 
-cd "$CACHEDIR"
-mkdir -p $WINEPREFIX/drive_c/tmp
+# the file we build here must be the one that is pinned for the other platforms
+grep -q "sha256:$LYRA2RE2_HASH_SHA256" "$CONTRIB/deterministic-build/requirements.txt" \
+    || fail "$pkgname $LYRA2RE2_HASH_VERSION is not what is pinned in deterministic-build/requirements.txt"
 
-# note: you might need "sudo apt-get install dirmngr" for the following
-# keys from https://www.python.org/downloads/#pubkeys
-KEYRING_PYTHON_DEV="keyring-electrum-build-python-dev.gpg"
-gpg --no-default-keyring --keyring $KEYRING_PYTHON_DEV --import "$here"/gpg_keys/7ED10B6531D7C8E1BC296021FC624643487034E5.asc
-PYTHON_DOWNLOADS="$CACHEDIR/python$PYTHON_VERSION"
-mkdir -p "$PYTHON_DOWNLOADS"
-for msifile in core dev exe lib pip tools; do
-    echo "Installing $msifile..."
-    download_if_not_exist "$PYTHON_DOWNLOADS/${msifile}.msi" "https://www.python.org/ftp/python/$PYTHON_VERSION/win32/${msifile}.msi"
-    download_if_not_exist "$PYTHON_DOWNLOADS/${msifile}.msi.asc" "https://www.python.org/ftp/python/$PYTHON_VERSION/win32/${msifile}.msi.asc"
-    verify_signature "$PYTHON_DOWNLOADS/${msifile}.msi.asc" $KEYRING_PYTHON_DEV
-    wine msiexec /i "$PYTHON_DOWNLOADS/${msifile}.msi" /qb TARGETDIR=$PYHOME
-done
+download_if_not_exist "$CACHEDIR/$LYRA2RE2_HASH_FILENAME" "$LYRA2RE2_HASH_URL"
+verify_hash "$CACHEDIR/$LYRA2RE2_HASH_FILENAME" "$LYRA2RE2_HASH_SHA256"
+rm -rf "$BUILDDIR"
+mkdir -p "$BUILDDIR"
+tar xf "$CACHEDIR/$LYRA2RE2_HASH_FILENAME" -C "$BUILDDIR" --strip-components=1
 
-$PYTHON -m pip install pip setuptools --upgrade
-$PYTHON -m pip install wheel
+(
+    cd "$BUILDDIR"
+    # e.g. python312.dll (but not python3.dll)
+    PYTHON_DLL=$(ls "$PYHOME"/python3[0-9]*.dll) || fail "Could not find the python DLL inside wine"
+    # note: list of source files is from the setup.py of the sdist. We only need the lyra2re2 module.
+    # note: see build_tools_util.sh for why LYRA2RE2_HASH_CFLAGS is needed
+    gcc_host gcc -shared -O2 -g0 $LYRA2RE2_HASH_CFLAGS \
+        -static-libgcc -Wl,--no-insert-timestamp \
+        -I"$PYHOME/include" -I. -I./sha3 \
+        -o "$pkgname.pyd" \
+        Lyra2RE.c Sponge.c Lyra2.c \
+        sha3/blake.c sha3/groestl.c sha3/keccak.c sha3/cubehash.c sha3/bmw.c sha3/skein.c \
+        lyra2re2module.c \
+        "$PYTHON_DLL" || fail "Could not build $pkgname"
+    host_strip "$pkgname.pyd"
+)
 
-# Install MinGW
-wget http://downloads.sourceforge.net/project/mingw/Installer/mingw-get-setup.exe
-wine mingw-get-setup.exe
+info "Installing $pkgname into wine python."
+cp -fpv "$BUILDDIR/$pkgname.pyd" "$SITE_PACKAGES/" || fail "Could not copy $pkgname to its destination"
+# minimal metadata, so that pip considers the package as installed
+DIST_INFO="$SITE_PACKAGES/$pkgname-$LYRA2RE2_HASH_VERSION.dist-info"
+rm -rf "$SITE_PACKAGES/$pkgname"-*.dist-info
+mkdir -p "$DIST_INFO"
+cat > "$DIST_INFO/METADATA" <<EOF
+Metadata-Version: 2.1
+Name: $pkgname
+Version: $LYRA2RE2_HASH_VERSION
+EOF
+echo "build-lyra2rev2.sh" > "$DIST_INFO/INSTALLER"
 
-echo "add C:\MinGW\bin to PATH using regedit"
-echo "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
-#regedit
-wine reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH /t REG_EXPAND_SZ /d C:\\MinGW\\bin\;C\:\\windows\\system32\;C:\\windows\;C:\\windows\\system32\\wbem /f
+info "Testing $pkgname inside wine."
+# test vector: PoW hash of the Monacoin mainnet header at height 2618875 (same as in blockchain.py)
+$WINE_PYTHON -c "
+import lyra2re2_hash
+raw_header = bytes.fromhex(
+    '000000207ef097f85c42eae5e53551c95a30c336a86b3958e9b2c99a44a16b4a4e5efb90c31ab1ae'
+    '02f56e9391b2427f02f418410d864df97ff869d0ab6f03f0971960528a8f41620c6d041a88c2bf8b')
+expected = '000000000000006985a7b5e5f5984542519975f07d9160457c3667eb44e44d74'
+assert lyra2re2_hash.getPoWHash(raw_header)[::-1].hex() == expected, 'wrong hash'
+" || fail "$pkgname does not work inside wine"
 
-wine mingw-get install gcc
-wine mingw-get install mingw-utils
-wine mingw-get install mingw32-libz
-
-printf "[build]\ncompiler=mingw32\n" > $WINEPREFIX/drive_c/$PYTHON_FOLDER/Lib/site-packages/setuptools/_distutils/distutils.cfg
-
-# Install VC++2015
-wget $WINETRICKS_MASTER_URL
-bash winetricks vcrun2015
-
-# build msvcr140.dll & remove ucrt
-cp remove_ucrt.patch $WINEPREFIX/drive_c/$PYTHON_FOLDER/Lib/site-packages/setuptools/_distutils
-pushd $WINEPREFIX/drive_c/$PYTHON_FOLDER/Lib/site-packages/setuptools/_distutils
-patch < remove_ucrt.patch
-popd
-
-
-wine pexports $WINEPREFIX/drive_c/$PYTHON_FOLDER/vcruntime140.dll >vcruntime140.def
-wine dlltool -dllname $WINEPREFIX/drive_c/$PYTHON_FOLDER/vcruntime140.dll --def vcruntime140.def --output-lib libvcruntime140.a
-cp libvcruntime140.a $WINEPREFIX/drive_c/MinGW/lib/
-
-# install lyra2re2_hash
-cd $WINEPREFIX/drive_c/tmp/
-git clone $LYRA2RE_HASH_PYTHON_URL
-cd lyra2re-hash-python
-git checkout 1.1.2
-$PYTHON setup.py bdist_wheel
-
-## cp $WINEPREFIX/drive_c/tmp/$LYRA2RE_HASH_PYTHON_URL/dist/* ~/
-## sudo rm -r wine64
+info "$pkgname has been built and installed."
