@@ -27,6 +27,6 @@ bitbox02>=7.0.0
 cbor2>=5.4.6,<6.0.0
 pyserial>=3.5.0,<4.0.0
 
-# prefer older urllib3 to avoid needing hatchling
-# (pulled in via trezor -> requests -> urllib3)
-urllib3<2
+# urllib3 1.26.x (pulled in via trezor -> requests -> urllib3) no longer gets security fixes,
+# so we use urllib3 2.x. It needs hatchling at build time, see requirements-build-base.txt
+urllib3>=2
