@@ -8,7 +8,8 @@
 
 pip
 setuptools
-wheel
+# wheel<0.46: python-for-android patches wheel._setuptools_logging, which 0.46 removed
+wheel<0.46
 
 # importlib_metadata also needs:
 # https://github.com/python/importlib_metadata/blob/1e2381fe101fd70742a0171e51c1be82aedf519b/pyproject.toml#L2
