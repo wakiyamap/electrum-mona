@@ -5,7 +5,7 @@ import tempfile
 import shutil
 from io import StringIO
 
-from electrum.simple_config import SimpleConfig, read_user_config
+from electrum_mona.simple_config import SimpleConfig, read_user_config
 
 from . import ElectrumTestCase
 

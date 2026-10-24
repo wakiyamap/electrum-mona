@@ -3,13 +3,13 @@ import tempfile
 import unittest
 from typing import List
 
-from electrum import constants
-from electrum.simple_config import SimpleConfig
-from electrum.blockchain import BlockchainManager
-from electrum.interface import Interface, ServerAddr, ChainResolutionMode
-from electrum.crypto import sha256
-from electrum.util import OldTaskGroup
-from electrum import util
+from electrum_mona import constants
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.blockchain import BlockchainManager
+from electrum_mona.interface import Interface, ServerAddr, ChainResolutionMode
+from electrum_mona.crypto import sha256
+from electrum_mona.util import OldTaskGroup
+from electrum_mona import util
 
 from . import ElectrumTestCase
 

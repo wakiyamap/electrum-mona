@@ -20,7 +20,7 @@ info "preparing electrum-locale."
 (
     "$CONTRIB/locale/build_cleanlocale.sh"
     # we want the binary to have only compiled (.mo) locale files; not source (.po) files
-    rm -r "$PROJECT_ROOT/electrum/locale/locale"/*/electrum.po
+    rm -r "$PROJECT_ROOT/electrum_mona/locale/locale"/*/electrum.po
 )
 
 find -exec touch -h -d '2000-11-11T11:11:11+00:00' {} +
@@ -54,7 +54,7 @@ info "Pip installing Electrum. This might take a long time if the project folder
 $WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-script-location .
 # pyinstaller needs to be able to "import electrum_ecc", for which we need libsecp256k1:
 # (or could try "pip install -e" instead)
-cp electrum/libsecp256k1-*.dll "$WINEPREFIX/drive_c/python3/Lib/site-packages/electrum_ecc/"
+cp electrum_mona/libsecp256k1-*.dll "$WINEPREFIX/drive_c/python3/Lib/site-packages/electrum_ecc/"
 popd
 
 

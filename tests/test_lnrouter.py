@@ -5,20 +5,20 @@ from unittest import mock
 from typing import Optional
 from os import urandom
 
-from electrum import util
-from electrum.channel_db import NodeInfo
-from electrum.onion_message import is_onion_message_node
-from electrum.trampoline import (create_trampoline_onion, _allocate_fee_budget_among_route, PLACEHOLDER_FEE,
+from electrum_mona import util
+from electrum_mona.channel_db import NodeInfo
+from electrum_mona.onion_message import is_onion_message_node
+from electrum_mona.trampoline import (create_trampoline_onion, _allocate_fee_budget_among_route, PLACEHOLDER_FEE,
                                  get_trampoline_budget)
-from electrum.util import bfh
-from electrum.lnutil import ShortChannelID, LnFeatures, PaymentFeeBudget
-from electrum.lnonion import (OnionHopsDataSingle, new_onion_packet,
+from electrum_mona.util import bfh
+from electrum_mona.lnutil import ShortChannelID, LnFeatures, PaymentFeeBudget
+from electrum_mona.lnonion import (OnionHopsDataSingle, new_onion_packet,
                               process_onion_packet, _decode_onion_error, decode_onion_error,
                               OnionFailureCode)
-from electrum import bitcoin, lnrouter
-from electrum.constants import BitcoinTestnet
-from electrum.simple_config import SimpleConfig
-from electrum.lnrouter import (PathEdge, LiquidityHintMgr, DEFAULT_PENALTY_PROPORTIONAL_MILLIONTH,
+from electrum_mona import bitcoin, lnrouter
+from electrum_mona.constants import BitcoinTestnet
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.lnrouter import (PathEdge, LiquidityHintMgr, DEFAULT_PENALTY_PROPORTIONAL_MILLIONTH,
                                DEFAULT_PENALTY_BASE_MSAT, fee_for_edge_msat, LNPaymentTRoute, TrampolineEdge,
                                HINT_DURATION)
 

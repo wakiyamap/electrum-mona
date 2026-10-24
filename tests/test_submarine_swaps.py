@@ -6,23 +6,23 @@ from unittest import mock
 
 from electrum_ecc import ECPrivkey
 
-from electrum import bitcoin, util
-from electrum.address_synchronizer import TX_HEIGHT_LOCAL
-from electrum.bitcoin import COIN, DUST_LIMIT_P2WSH
-from electrum.util import bfh, now
-from electrum.crypto import sha256
-from electrum.lnonion import OnionRoutingFailure
-from electrum.lnutil import generate_random_keypair
-from electrum.plugins.swapserver.server import HttpSwapServer
-from electrum.plugins.swapserver.swapserver import SwapServerPlugin
-from electrum.simple_config import SimpleConfig
-from electrum.submarine_swaps import (
+from electrum_mona import bitcoin, util
+from electrum_mona.address_synchronizer import TX_HEIGHT_LOCAL
+from electrum_mona.bitcoin import COIN, DUST_LIMIT_P2WSH
+from electrum_mona.util import bfh, now
+from electrum_mona.crypto import sha256
+from electrum_mona.lnonion import OnionRoutingFailure
+from electrum_mona.lnutil import generate_random_keypair
+from electrum_mona.plugins.swapserver.server import HttpSwapServer
+from electrum_mona.plugins.swapserver.swapserver import SwapServerPlugin
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.submarine_swaps import (
     SwapManager, SwapData, NostrTransport, SwapServerTransport, LOCKTIME_DELTA_REFUND,
     MIN_LOCKTIME_DELTA_FOR_CLAIM, SPENDER_FINALITY_DELAY, _construct_swap_scriptcode)
-from electrum.transaction import (
+from electrum_mona.transaction import (
     PartialTransaction, PartialTxOutput, Transaction, TxOutput, TxOutpoint)
-from electrum.txbatcher import TxBatcher
-from electrum.wallet import Standard_Wallet, Wallet, Abstract_Wallet
+from electrum_mona.txbatcher import TxBatcher
+from electrum_mona.wallet import Standard_Wallet, Wallet, Abstract_Wallet
 
 from . import ElectrumTestCase
 from .toyserver.testcase import ToyServerTestCase
@@ -449,7 +449,7 @@ class TestSwapClaim(ToyServerTestCase):
         transport = MockSwapServerTransport(config=self.alice.config, sm=self.sm)
         # the hold invoice is created with a 300s expiry, so this is one second past it
         expired_clock = now() + 301
-        with mock.patch('electrum.submarine_swaps.now', lambda: expired_clock):
+        with mock.patch('electrum_mona.submarine_swaps.now', lambda: expired_clock):
             funding_txid = await self.sm.wait_for_htlcs_and_broadcast(
                 transport=transport, swap=swap, invoice=self.invoice, tx=tx)
         # we sent the request to the server

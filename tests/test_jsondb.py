@@ -10,8 +10,8 @@ from jsonpointer import JsonPointerException
 
 from . import ElectrumTestCase
 
-from electrum.json_db import JsonDB
-from electrum.util import WalletFileException
+from electrum_mona.json_db import JsonDB
+from electrum_mona.util import WalletFileException
 
 class TestJsonpatch(ElectrumTestCase):
 

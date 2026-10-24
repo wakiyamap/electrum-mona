@@ -3,9 +3,9 @@ import os
 import json
 from typing import Dict, List
 
-from electrum import bitcoin
-from electrum.json_db import StoredDict
-from electrum.lnutil import (
+from electrum_mona import bitcoin
+from electrum_mona.json_db import StoredDict
+from electrum_mona.lnutil import (
     RevocationStore, get_per_commitment_secret_from_seed, make_offered_htlc, make_received_htlc, make_commitment,
     make_htlc_tx_witness, make_htlc_tx_output, make_htlc_tx_inputs, secret_to_pubkey, derive_blinded_pubkey,
     derive_privkey, derive_pubkey, make_htlc_tx, extract_ctn_from_tx, get_compressed_pubkey_from_bech32,
@@ -14,13 +14,13 @@ from electrum.lnutil import (
     ImportedChannelBackupStorage, OnchainChannelBackupStorage, list_enabled_ln_feature_bits, PaymentFeeBudget,
     LnFeatureContexts, Keypair, OnlyPubkeyKeypair, LOCAL
 )
-from electrum.util import bfh, MyEncoder
-from electrum.transaction import Transaction, PartialTransaction, Sighash
-from electrum.lnworker import LNWallet
-from electrum.lnchannel import ChannelBackup
-from electrum.wallet import Standard_Wallet
-from electrum.wallet_db import WalletDB, FINAL_SEED_VERSION
-from electrum.simple_config import SimpleConfig
+from electrum_mona.util import bfh, MyEncoder
+from electrum_mona.transaction import Transaction, PartialTransaction, Sighash
+from electrum_mona.lnworker import LNWallet
+from electrum_mona.lnchannel import ChannelBackup
+from electrum_mona.wallet import Standard_Wallet
+from electrum_mona.wallet_db import WalletDB, FINAL_SEED_VERSION
+from electrum_mona.simple_config import SimpleConfig
 
 from . import ElectrumTestCase, as_testnet
 from . import restore_wallet_from_text__for_unittest
@@ -803,7 +803,7 @@ class TestLNUtil(ElectrumTestCase):
     def test_commitment_tx_anchors_test_vectors(self):
         # this test is only valid for the original anchor output test vectors (not anchors-zero-fee-htlcs),
         # therefore we patch the effective htlc tx weight to result in a finite weight
-        from electrum import lnutil
+        from electrum_mona import lnutil
         effective_htlc_tx_weight_original = lnutil.effective_htlc_tx_weight
 
         def effective_htlc_tx_weight_patched(success: bool, has_anchors: bool):

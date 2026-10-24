@@ -65,9 +65,9 @@ if is_pyinstaller:
     _file = open(sys.executable, 'rb')
 
 
-# when running from source, on Windows, also search for DLLs in inner 'electrum' folder
+# when running from source, on Windows, also search for DLLs in inner 'electrum_mona' folder
 if is_local and os.name == 'nt':  # fixme: duplicated between main script and __init__.py :(
-    os.add_dll_directory(os.path.join(os.path.dirname(__file__), 'electrum'))
+    os.add_dll_directory(os.path.join(os.path.dirname(__file__), 'electrum_mona'))
 
 
 def check_imports():
@@ -112,21 +112,21 @@ os.umask(0o0077)
 
 sys._ELECTRUM_RUNNING_VIA_RUNELECTRUM = True  # used by logging.py
 
-from electrum.logging import get_logger, configure_logging  # import logging submodule first
-from electrum import util
-from electrum.payment_identifier import PaymentIdentifier
-from electrum import SimpleConfig
-from electrum.wallet_db import WalletDB
-from electrum.wallet import Wallet
-from electrum.storage import WalletStorage
-from electrum.util import print_msg, print_stderr, json_encode, json_decode, UserCancelled
-from electrum.util import InvalidPassword
-from electrum.plugin import Plugins
-from electrum.commands import get_parser, get_simple_parser, known_commands, Commands, config_variables
-from electrum import daemon
-from electrum.util import create_and_start_event_loop, UserFacingException, JsonRPCError
-from electrum.i18n import set_language
-from electrum import constants
+from electrum_mona.logging import get_logger, configure_logging  # import logging submodule first
+from electrum_mona import util
+from electrum_mona.payment_identifier import PaymentIdentifier
+from electrum_mona import SimpleConfig
+from electrum_mona.wallet_db import WalletDB
+from electrum_mona.wallet import Wallet
+from electrum_mona.storage import WalletStorage
+from electrum_mona.util import print_msg, print_stderr, json_encode, json_decode, UserCancelled
+from electrum_mona.util import InvalidPassword
+from electrum_mona.plugin import Plugins
+from electrum_mona.commands import get_parser, get_simple_parser, known_commands, Commands, config_variables
+from electrum_mona import daemon
+from electrum_mona.util import create_and_start_event_loop, UserFacingException, JsonRPCError
+from electrum_mona.i18n import set_language
+from electrum_mona import constants
 
 if TYPE_CHECKING:
     import threading
@@ -308,7 +308,7 @@ def read_config(config_options: dict) -> SimpleConfig:
         if full_config_options.get("cmd") == 'gui':
             gui_name = full_config_options.get(SimpleConfig.GUI_NAME.key(), 'qt')
             try:
-                gui = __import__(f'electrum.gui.{gui_name}', fromlist=['electrum'])
+                gui = __import__(f'electrum_mona.gui.{gui_name}', fromlist=['electrum_mona'])
                 gui.standalone_exception_dialog(config_error)  # type: ignore
             except Exception as e:
                 print_stderr(f"Error showing standalone gui dialog: {e}")
@@ -437,7 +437,7 @@ def main():
         lang = config.LOCALIZATION_LANGUAGE
         if not lang:
             try:
-                from electrum.gui.default_lang import get_default_language
+                from electrum_mona.gui.default_lang import get_default_language
                 lang = get_default_language(gui_name=gui_name)
                 _logger.info(f"get_default_language: detected default as {lang=!r}")
             except ImportError as e:
@@ -454,8 +454,8 @@ def main():
         sys.exit(1)
 
     if sys.platform == "linux" and not config.DISABLE_MEMORY_HARDENING_LINUX:
-        import electrum.harden_memory_linux
-        electrum.harden_memory_linux.set_dumpable_safe(False)
+        import electrum_mona.harden_memory_linux
+        electrum_mona.harden_memory_linux.set_dumpable_safe(False)
 
     if cmdname == 'daemon' and config.get("detach"):
         # detect lockfile.

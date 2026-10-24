@@ -1,13 +1,13 @@
 import asyncio
 from aiorpcx import RPCError
 
-from electrum import util
-from electrum.bitcoin import COIN
-from electrum.interface import ServerAddr, PaddedRSTransport
-from electrum.util import bfh
-from electrum.simple_config import SimpleConfig
-from electrum.transaction import Transaction, TxOutput
-from electrum.wallet import Abstract_Wallet
+from electrum_mona import util
+from electrum_mona.bitcoin import COIN
+from electrum_mona.interface import ServerAddr, PaddedRSTransport
+from electrum_mona.util import bfh
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.transaction import Transaction, TxOutput
+from electrum_mona.wallet import Abstract_Wallet
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest

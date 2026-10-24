@@ -13,7 +13,7 @@ import json
 import os
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-LOCALE_DIR = os.path.join(PROJECT_ROOT, "electrum", "locale", "locale")
+LOCALE_DIR = os.path.join(PROJECT_ROOT, "electrum_mona", "locale", "locale")
 
 
 if __name__ == '__main__':

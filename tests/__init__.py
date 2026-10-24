@@ -8,13 +8,13 @@ import functools
 import inspect
 from typing import TYPE_CHECKING, Callable, List
 
-import electrum
-import electrum.logging
-from electrum import constants
-from electrum import util
-from electrum.util import OldTaskGroup
-from electrum.logging import Logger
-from electrum.wallet import restore_wallet_from_text
+import electrum_mona
+import electrum_mona.logging
+from electrum_mona import constants
+from electrum_mona import util
+from electrum_mona.util import OldTaskGroup
+from electrum_mona.logging import Logger
+from electrum_mona.wallet import restore_wallet_from_text
 
 if TYPE_CHECKING:
     from .test_lnpeer import MockLNWallet
@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 FAST_TESTS = False
 
 
-electrum.logging._configure_stderr_logging(verbosity="*")
+electrum_mona.logging._configure_stderr_logging(verbosity="*")
 
-electrum.util.AS_LIB_USER_I_WANT_TO_MANAGE_MY_OWN_ASYNCIO_LOOP = True
+electrum_mona.util.AS_LIB_USER_I_WANT_TO_MANAGE_MY_OWN_ASYNCIO_LOOP = True
 
 
 class ElectrumTestCase(unittest.IsolatedAsyncioTestCase, Logger):
@@ -72,7 +72,7 @@ class ElectrumTestCase(unittest.IsolatedAsyncioTestCase, Logger):
             raise Exception("timed out waiting for test_lock")
         super().setUp()
         self.unittest_base_path = tempfile.mkdtemp(prefix="electrum-unittest-base-")
-        self.electrum_path = os.path.join(self.unittest_base_path, "electrum")
+        self.electrum_path = os.path.join(self.unittest_base_path, "electrum_mona")
         util.make_dir(self.electrum_path)
         assert util._asyncio_event_loop is None, "global event loop already set?!"
         self._lnworkers_created = []  # type: List[MockLNWallet]

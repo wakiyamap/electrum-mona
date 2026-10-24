@@ -1,8 +1,8 @@
 import os
 
-from electrum.simple_config import SimpleConfig
-from electrum.wallet import Abstract_Wallet
-from electrum.daemon import Daemon
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.wallet import Abstract_Wallet
+from electrum_mona.daemon import Daemon
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest

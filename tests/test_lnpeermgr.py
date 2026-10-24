@@ -6,8 +6,8 @@ from unittest import mock
 
 from . import ElectrumTestCase
 
-from electrum.lntransport import ConnStringFormatError
-from electrum.logging import console_stderr_handler
+from electrum_mona.lntransport import ConnStringFormatError
+from electrum_mona.logging import console_stderr_handler
 
 
 class TestLNPeerManager(ElectrumTestCase):

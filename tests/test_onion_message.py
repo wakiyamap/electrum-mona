@@ -11,22 +11,22 @@ from aiorpcx import NetAddress
 import electrum_ecc as ecc
 from electrum_ecc import ECPrivkey
 
-from electrum import SimpleConfig
-from electrum.lnmsg import decode_msg, OnionWireSerializer
-from electrum.lnonion import (
+from electrum_mona import SimpleConfig
+from electrum_mona.lnmsg import decode_msg, OnionWireSerializer
+from electrum_mona.lnonion import (
     OnionHopsDataSingle, OnionPacket, process_onion_packet, get_bolt04_onion_key, encrypt_onionmsg_data_tlv,
     get_shared_secrets_along_route, new_onion_packet, ONION_MESSAGE_LARGE_SIZE, HOPS_DATA_SIZE, InvalidPayloadSize,
     encrypt_hops_recipient_data, blinding_privkey, decrypt_onionmsg_data_tlv)
-from electrum.crypto import get_ecdh, privkey_to_pubkey
-from electrum.lntransport import LNPeerAddr
-from electrum.lnutil import (LnFeatures, Keypair, MIN_FINAL_CLTV_DELTA_ACCEPTED, REMOTE,
+from electrum_mona.crypto import get_ecdh, privkey_to_pubkey
+from electrum_mona.lntransport import LNPeerAddr
+from electrum_mona.lnutil import (LnFeatures, Keypair, MIN_FINAL_CLTV_DELTA_ACCEPTED, REMOTE,
                              MIN_FINAL_CLTV_DELTA_BUFFER_INVOICE)
-from electrum.onion_message import (
+from electrum_mona.onion_message import (
     create_blinded_path, OnionMessageManager, NoRouteFound, Timeout,
     create_route_to_introduction_point, get_blinded_paths_to_me, NoOnionMessagePeers
 )
-from electrum.util import bfh, read_json_file, OldTaskGroup, get_asyncio_loop
-from electrum.logging import console_stderr_handler
+from electrum_mona.util import bfh, read_json_file, OldTaskGroup, get_asyncio_loop
+from electrum_mona.logging import console_stderr_handler
 
 from . import ElectrumTestCase
 from .test_lnpeer import TestPeer, inject_chan_into_gossipdb
@@ -555,7 +555,7 @@ class TestOnionMessageUtils(TestPeer):
                 )
 
         # patch is_onion_message_node so we don't have to inject node announcements
-        with patch('electrum.onion_message.is_onion_message_node', return_value=True):
+        with patch('electrum_mona.onion_message.is_onion_message_node', return_value=True):
             r = create_route_to_introduction_point(alice, blinded_path, introduction_point, session_key)
         peer, path_key, hops_data, blinded_node_ids = r
         # alice hands the onion over to bob

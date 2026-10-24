@@ -3,8 +3,8 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
-from electrum import SimpleConfig
-from electrum.gui.qml.qeconfig import QEConfig
+from electrum_mona import SimpleConfig
+from electrum_mona.gui.qml.qeconfig import QEConfig
 
 from .qt_util import QETestCase, qt_test
 
@@ -17,7 +17,7 @@ class TestConfig(QETestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls._unittest_base_path = tempfile.mkdtemp(prefix="electrum-unittest-base-")
-        electrum_path = os.path.join(cls._unittest_base_path, "electrum")
+        electrum_path = os.path.join(cls._unittest_base_path, "electrum_mona")
         config = SimpleConfig({'electrum_path': electrum_path})
         QEConfig(config)
 

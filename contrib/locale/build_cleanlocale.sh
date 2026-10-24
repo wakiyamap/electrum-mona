@@ -9,7 +9,7 @@ PROJECT_ROOT="$CONTRIB"/..
 cd "$PROJECT_ROOT"
 git submodule update --init
 
-LOCALE="$PROJECT_ROOT/electrum/locale/"
+LOCALE="$PROJECT_ROOT/electrum_mona/locale/"
 cd "$LOCALE"
 git clean -ffxd
 git reset --hard

@@ -4,17 +4,17 @@ from typing import NamedTuple, Union
 
 from electrum_ecc import ECPrivkey, ecdsa_der_sig_from_r_and_s
 
-from electrum import transaction, bitcoin
-from electrum.transaction import (convert_raw_tx_to_hex, tx_from_any, Transaction,
+from electrum_mona import transaction, bitcoin
+from electrum_mona.transaction import (convert_raw_tx_to_hex, tx_from_any, Transaction,
                                   PartialTransaction, TxOutpoint, PartialTxInput,
                                   PartialTxOutput, Sighash, match_script_against_template,
                                   SCRIPTPUBKEY_TEMPLATE_ANYSEGWIT, TxOutput, script_GetOp,
                                   MalformedBitcoinScript)
-from electrum.util import bfh
-from electrum.crypto import sha256d
-from electrum.bitcoin import (deserialize_privkey, opcodes,
+from electrum_mona.util import bfh
+from electrum_mona.crypto import sha256d
+from electrum_mona.bitcoin import (deserialize_privkey, opcodes,
                               construct_script, construct_witness)
-from electrum import descriptor
+from electrum_mona import descriptor
 
 from .test_bitcoin import disable_ecdsa_r_value_grinding
 from . import ElectrumTestCase

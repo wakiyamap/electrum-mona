@@ -19,7 +19,7 @@ project_root = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 os.chdir(project_root)
 
 EXCLUDE_PATH_PREFIX = {
-    "electrum/wordlist/",
+    "electrum_mona/wordlist/",
     "fastlane/",
     "tests/",
 }

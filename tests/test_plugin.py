@@ -3,12 +3,12 @@ import sys
 
 from unittest import mock
 
-from electrum import util
-from electrum import plugin as plugin_module
-from electrum.crypto import sha256
-from electrum.plugin import Plugins, IncorrectPluginHash, PluginMetadata
-from electrum.zip_importer import MemoryZipImporter
-from electrum.simple_config import SimpleConfig
+from electrum_mona import util
+from electrum_mona import plugin as plugin_module
+from electrum_mona.crypto import sha256
+from electrum_mona.plugin import Plugins, IncorrectPluginHash, PluginMetadata
+from electrum_mona.zip_importer import MemoryZipImporter
+from electrum_mona.simple_config import SimpleConfig
 
 from electrum_ecc import ECPrivkey
 
