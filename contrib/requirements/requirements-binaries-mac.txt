@@ -4,4 +4,5 @@
 PyQt6<6.7
 PyQt6-Qt6<6.7,!=6.6.3
 
-cryptography>=2.6
+# cryptography<50: 50.0.0 has no wheels for macOS x86_64, where the dmg is built
+cryptography>=2.6,<50
