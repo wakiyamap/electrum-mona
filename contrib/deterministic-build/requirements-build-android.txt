@@ -20,8 +20,9 @@ ptyprocess==0.7.0 \
     --hash=sha256:5c5d0a3b48ceee0b48485e0c26037c0acd7d29765ca3fbb5cb3831d347423220
 pyproject-hooks==1.2.0 \
     --hash=sha256:1e859bd5c40fae9448642dd871adf459e5e2084186e8d2c2a79a824c970da1f8
-setuptools==80.9.0 \
-    --hash=sha256:f36b47402ecde768dbfafc46e8e4207b4360c654f1f3bb84475f0a28628fb19c
+setuptools==84.1.0 \
+    --hash=sha256:23657205b63d4d31395ab917815247f694aafad28cd21316bf5fd45a51048ea0 \
+    --hash=sha256:5231689c6ac8156cd155cfb98c3fd6fb252c3e7e9bd3d78b64d3c55f132624c9
 sh==2.2.2 \
     --hash=sha256:653227a7c41a284ec5302173fbc044ee817c7bad5e6e4d8d55741b9aeb9eb65b
 toml==0.10.2 \
