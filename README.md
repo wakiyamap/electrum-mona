@@ -37,6 +37,13 @@ If you want to use the Qt interface, install the Qt dependencies:
 $ sudo apt-get install python3-pyqt6
 ```
 
+#### QR code scanning
+
+QR code recognition uses QtMultimedia and [zxing-cpp](https://github.com/zxing-cpp/zxing-cpp/):
+```
+$ sudo apt-get install python3-pyqt6.qtmultimedia libzxing3 (or libzxing4)
+```
+
 #### libsecp256k1
 
 For elliptic curve operations,

@@ -89,7 +89,7 @@ class Plugin(ColdcardPlugin, QtPluginBase):
             selected_keystore = coldcard_keystores[index]
             client = self.get_client(selected_keystore, force_pair=True, allow_user_interaction=False)
             if client is None:
-                main_window.show_error("{} not connected.").format(selected_keystore.label)
+                main_window.show_error(_("{} not connected.").format(selected_keystore.label))
                 return
 
             wallet = main_window.wallet
@@ -193,6 +193,7 @@ class CKCCSettingsDialog(WindowModalDialog):
         for row_num, (member_name, label) in enumerate(rows):
             # XXX we know xfp already, even if not connected
             widget = QLabel('<tt>000000000000')
+            widget.setTextFormat(Qt.TextFormat.RichText)
             widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
 
             grid.addWidget(QLabel(label), y, 0, 1, 1, Qt.AlignmentFlag.AlignRight)

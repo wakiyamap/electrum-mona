@@ -443,15 +443,22 @@ class TxInput:
             d['witness'] = [x.hex() for x in self.witness_elements()]
         return d
 
-    def serialize_to_network(self, *, script_sig: bytes | None = None) -> bytes:
+    def serialize_to_network(
+        self,
+        *,
+        script_sig: bytes | None = None,
+        nsequence: int | None = None,
+    ) -> bytes:
         if script_sig is None:
             script_sig = self.script_sig
+        if nsequence is None:
+            nsequence = self.nsequence
         # Prev hash and index
         s = self.prevout.serialize_to_network()
         # Script length, script, sequence
         s += var_int(len(script_sig))
         s += script_sig
-        s += int.to_bytes(self.nsequence, length=4, byteorder="little", signed=False)
+        s += int.to_bytes(nsequence, length=4, byteorder="little", signed=False)
         return s
 
     def witness_elements(self) -> Sequence[bytes]:
@@ -462,10 +469,13 @@ class TxInput:
         n = vds.read_compact_size()
         return list(vds.read_bytes(vds.read_compact_size()) for i in range(n))
 
-    def is_segwit(self, *, guess_for_address=False) -> bool:
+    def has_witness(self) -> bool:
         if self.witness not in (b'\x00', b'', None):
             return True
         return False
+
+    def is_segwit(self, *, guess_for_address=False) -> bool:
+        return self.has_witness()
 
     def is_taproot(self) -> Optional[bool]:
         if self._is_taproot is None:
@@ -1054,6 +1064,7 @@ class Transaction:
         *,
         sighash: Optional[int] = None,
         sighash_cache: SighashCache | None = None,
+        strict: bool = True,  # enforce policy/standardness
     ) -> bytes:
         nVersion = int.to_bytes(self.version, length=4, byteorder="little", signed=True)
         nLocktime = int.to_bytes(self.locktime, length=4, byteorder="little", signed=False)
@@ -1066,7 +1077,9 @@ class Transaction:
             if sighash is None:
                 sighash = Sighash.DEFAULT if txin.is_taproot() else Sighash.ALL
         assert sighash is not None
-        if not Sighash.is_valid(sighash, is_taproot=txin.is_taproot()):
+        if (strict or txin.is_taproot()) and not Sighash.is_valid(sighash, is_taproot=txin.is_taproot()):
+            # Undefined sighashes for legacy and segwit are non-standard but consensus-valid.
+            # Undefined sighashes for taproot are invalid by consensus.
             raise Exception(f"SIGHASH_FLAG ({sighash}) not supported!")
         if sighash_cache is None:
             sighash_cache = SighashCache()
@@ -1134,13 +1147,28 @@ class Transaction:
                 preimage = nVersion + hashPrevouts + hashSequence + outpoint + scriptCode + amount + nSequence + hashOutputs + nLocktime + nHashType
                 return preimage
         else:  # legacy sighash (pre-segwit)
-            if sighash != Sighash.ALL:
-                raise Exception(f"SIGHASH_FLAG ({sighash}) not supported! (for legacy sighash)")
+            # see https://github.com/bitcoin/bitcoin/blob/f86c614e69256b9814c27b0dd096ee46daa71aa3/src/script/interpreter.cpp#L1338
+            base_sighash = sighash & 0x1f
+            if base_sighash == Sighash.SINGLE and txin_index >= len(outputs):
+                raise Exception("Using SIGHASH_SINGLE without a corresponding output")
             preimage_script = txin.get_scriptcode_for_sighash()
-            txins = var_int(len(inputs)) + b"".join(
-                txin.serialize_to_network(script_sig=preimage_script if txin_index==k else b"")
-                for k, txin in enumerate(inputs))
-            txouts = var_int(len(outputs)) + b"".join(o.serialize_to_network() for o in outputs)
+            def serialize_txin(k: int, txin_k: TxInput) -> bytes:
+                if k == txin_index:
+                    return txin_k.serialize_to_network(script_sig=preimage_script)
+                else:
+                    nsequence = 0 if base_sighash in (Sighash.NONE, Sighash.SINGLE) else txin_k.nsequence
+                    return txin_k.serialize_to_network(script_sig=b"", nsequence=nsequence)
+            if sighash & Sighash.ANYONECANPAY:
+                txins = var_int(1) + serialize_txin(txin_index, txin)
+            else:
+                txins = var_int(len(inputs)) + b"".join(serialize_txin(k, txin_k) for k, txin_k in enumerate(inputs))
+            if base_sighash == Sighash.NONE:
+                txouts = var_int(0)
+            elif base_sighash == Sighash.SINGLE:
+                blank_txout = int.to_bytes(2**64 - 1, length=8, byteorder="little", signed=False) + var_int(0)
+                txouts = var_int(txin_index + 1) + blank_txout * txin_index + outputs[txin_index].serialize_to_network()
+            else:
+                txouts = var_int(len(outputs)) + b"".join(o.serialize_to_network() for o in outputs)
             nHashType = int.to_bytes(sighash, length=4, byteorder="little", signed=False)
             preimage = nVersion + txins + txouts + nLocktime + nHashType
             return preimage
@@ -1153,20 +1181,41 @@ class Transaction:
         pubkey_bytes: bytes,
         sig: bytes,
         sighash_cache: SighashCache | None = None,
+        strict: bool = True,  # enforce policy/standardness
     ) -> bool:
         txin = self.inputs()[txin_index]
         if txin.is_taproot():
             raise Exception("not implemented")  # TODO
         else:
             der_sig, sighash = sig[:-1], sig[-1]
-            pre_hash = self.serialize_preimage(txin_index, sighash=sighash, sighash_cache=sighash_cache)
+            if not txin.is_segwit() and sighash & 0x1f == Sighash.SINGLE and txin_index >= len(self.outputs()):
+                msg_hash = (1).to_bytes(32, byteorder="little")  # legacy consensus quirk
+            else:
+                pre_hash = self.serialize_preimage(
+                    txin_index, sighash=sighash, sighash_cache=sighash_cache, strict=strict)
+                msg_hash = sha256d(pre_hash)
             pubkey = ecc.ECPubkey(pubkey_bytes)
-            msg_hash = sha256d(pre_hash)
             sig64 = ecc.ecdsa_sig64_from_der_sig(der_sig)
             return pubkey.ecdsa_verify(sig64, msg_hash)
 
-    def is_segwit(self, *, guess_for_address=False):
+    def is_any_segwit(self, *, guess_for_address: bool = False) -> bool:
+        # If any input is segwit, the tx needs to serialized with a witness and it will have a wtxid != txid,
+        # however the non-segwit inputs are still malleable.
         return any(txin.is_segwit(guess_for_address=guess_for_address)
+                   for txin in self.inputs())
+
+    def is_all_segwit(self, *, guess_for_address: bool = False) -> bool:
+        """Returns whether *all* inputs are segwit.
+
+        If not, the txid is trivially malleable:
+        - by any signer, who can e.g. re-sign the non-segwit inputs using different nonces
+        - by miners: most third-party malleability results in the tx being non-standard,
+          so at least arbitrary tx relaying nodes cannot do it. But if they mine the tx, they can.
+
+        ref https://github.com/bitcoin/bips/blob/master/bip-0062.mediawiki#motivation
+        ref https://github.com/bitcoin/bitcoin/blob/05bc2f53ce0cb239c17dbdd6b261bd2db7d2a940/src/policy/policy.h#L118-L131
+        """
+        return all(txin.is_segwit(guess_for_address=guess_for_address)
                    for txin in self.inputs())
 
     def invalidate_ser_cache(self):
@@ -1203,8 +1252,8 @@ class Transaction:
             for txin in inputs)
         txouts = var_int(len(outputs)).hex() + ''.join(o.serialize_to_network().hex() for o in outputs)
 
-        use_segwit_ser_for_estimate_size = estimate_size and self.is_segwit(guess_for_address=True)
-        use_segwit_ser_for_actual_use = not estimate_size and self.is_segwit()
+        use_segwit_ser_for_estimate_size = estimate_size and self.is_any_segwit(guess_for_address=True)
+        use_segwit_ser_for_actual_use = not estimate_size and self.is_any_segwit()
         use_segwit_ser = use_segwit_ser_for_estimate_size or use_segwit_ser_for_actual_use
         if include_sigs and not force_legacy and use_segwit_ser:
             marker = '00'
@@ -1232,8 +1281,7 @@ class Transaction:
     def txid(self) -> Optional[str]:
         if self._cached_txid is None:
             self.deserialize()
-            all_segwit = all(txin.is_segwit() for txin in self.inputs())
-            if not all_segwit and not self.is_complete():
+            if not self.is_all_segwit() and not self.is_complete():
                 return None
             try:
                 ser = self.serialize_to_network(force_legacy=True)
@@ -1302,7 +1350,7 @@ class Transaction:
         except Exception as e:
             has_errored = True
             _logger.error(f"tx.add_info_from_network() got exc: {e!r}")
-            if isinstance(e, NetworkException) and not ignore_network_issues:
+            if not (isinstance(e, NetworkException) and ignore_network_issues):
                 raise
         finally:
             has_finished = True
@@ -1412,7 +1460,7 @@ class Transaction:
     def estimated_witness_size(self):
         """Return an estimate of witness size in bytes."""
         estimate = not self.is_complete()
-        if not self.is_segwit(guess_for_address=estimate):
+        if not self.is_any_segwit(guess_for_address=estimate):
             return 0
         inputs = self.inputs()
         witness = b"".join(self.serialize_witness(x, estimate_size=estimate) for x in inputs)
@@ -1939,6 +1987,8 @@ class PartialTxInput(TxInput, PSBTSection):
             return True
         if self.script_sig is not None and not self.is_segwit():
             return True
+        if self.has_witness() and self.is_native_segwit():
+            return True
         if desc := self.script_descriptor:
             try:
                 desc.satisfy(allow_dummy=False, sigdata=self.sigs_ecdsa)
@@ -2043,7 +2093,7 @@ class PartialTxInput(TxInput, PSBTSection):
 
     def is_segwit(self, *, guess_for_address=False) -> bool:
         """Whether this input is segwit (any witness version)."""
-        if super().is_segwit():
+        if self.has_witness():
             return True
         if self.is_native_segwit() or self.is_p2sh_segwit():
             return True
@@ -2485,6 +2535,11 @@ class PartialTransaction(Transaction):
         # keypairs:  pubkey_bytes -> secret_bytes
         sighash_cache = SighashCache()
         for i, txin in enumerate(self.inputs()):
+            if txin.has_witness():
+                # note: serialize_preimage relies on is_segwit(), which returns True
+                # if the PSBT contains a witness, even for non-segwit inputs.
+                _logger.info(f"not signing input {i}: it already has a witness")
+                continue
             for pubkey in txin.pubkeys:
                 if txin.is_complete():
                     break

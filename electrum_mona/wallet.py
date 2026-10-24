@@ -60,7 +60,9 @@ from .util import (
     OnchainHistoryItem, read_json_file, write_json_file, UserFacingException, FileImportFailed, EventListener,
     event_listener, is_hex_str,
 )
-from .bitcoin import COIN, is_address, is_minikey, relayfee, dust_threshold, DummyAddress, DummyAddressUsedInTxException
+from .bitcoin import (
+    COIN, is_address, is_minikey, relayfee, dust_threshold, DummyAddress, DummyAddressUsedInTxException, construct_witness,
+)
 from .keystore import (
     load_keystore, Hardware_KeyStore, KeyStore, KeyStoreWithMPK, AddressIndexGeneric, CannotDerivePubkey
 )
@@ -70,7 +72,8 @@ from .stored_dict import StorageEncryptionVersion
 from .storage import  WalletStorage
 from .wallet_db import WalletDB
 from .transaction import (
-    Transaction, TxInput, TxOutput, PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint, Sighash
+    Transaction, TxInput, TxOutput, PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint, Sighash,
+    script_GetOp, SighashCache,
 )
 from .plugin import run_hook
 from .address_synchronizer import (
@@ -83,7 +86,7 @@ from .mnemonic import Mnemonic
 from .lnworker import LNWallet
 from .lnutil import MIN_FUNDING_SAT, RECEIVED, SENT
 from .lntransport import extract_nodeid
-from .descriptor import Descriptor
+from .descriptor import Descriptor, MissingSolutionPiece
 from .txbatcher import TxBatcher
 from .submarine_swaps import MIN_SWAP_AMOUNT_SAT
 
@@ -426,7 +429,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         Logger.__init__(self)
 
         self.network = None
-        self.adb = AddressSynchronizer(db, config, name=self.diagnostic_name())
+        self.adb = AddressSynchronizer(
+            db, config, verify_txins=self._verify_txin_signatures, name=self.diagnostic_name())
         for addr in self.get_addresses():
             self.adb.add_address(addr)
         self.lock = self.adb.lock
@@ -547,6 +551,23 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def has_channels(self):
         return self.lnworker is not None and len(self.lnworker._channels) > 0
 
+    def lightning_needs_keystore(self) -> bool:
+        """Whether lightning needs the keystore to keep functioning, i.e. whether
+        the keystore must not be disabled (made watching-only).
+
+        lnworker itself only needs lightning_xprv (or lightning_privkey2), not the keystore.
+        However, a watching-only wallet does not sign transactions (see sign_transaction),
+        so it could not sweep the outputs of force-closed channels (incl. penalty txs),
+        nor claim or refund submarine swaps. Anchor channels also need wallet coins for fees.
+        """
+        if not self.lnworker:
+            return False
+        if any(not chan.is_redeemed() for chan in self.lnworker.channels.values()):
+            return True
+        if self.lnworker.swap_manager.get_pending_swaps():
+            return True
+        return False
+
     def can_have_lightning(self) -> bool:
         """ whether this wallet can create new channels """
         # we want static_remotekey to be a wallet address
@@ -654,8 +675,6 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         if not self.tx_is_related(tx):
             return
         self.clear_tx_parents_cache()
-        if self.lnworker:
-            self.lnworker.maybe_add_backup_from_tx(tx)
         self._update_invoices_and_reqs_touched_by_tx(tx)
         util.trigger_callback('new_transaction', self, tx)
 
@@ -1748,7 +1767,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         if label := self._default_labels.get(tx_hash):
             return label
         labels = []
-        tx = self.adb.get_transaction(tx_hash)
+        tx = self.db.get_transaction(tx_hash)
         if tx:
             for txin in tx.inputs():
                 outpoint = txin.prevout.to_str()
@@ -2072,6 +2091,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     base_tx.add_info_from_wallet(self)
                 else:
                     # don't cast PartialTransaction, because it removes make_witness
+                    base_tx = copy.deepcopy(base_tx)  # don't mutate callers tx
                     base_tx.remove_signatures()
                 base_tx_fee = base_tx.get_fee()  # FIXME could be None if some inputs are non-ismine
                 base_feerate = Decimal(base_tx_fee) / base_tx_size
@@ -2589,6 +2609,52 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             return False
         return tx.is_rbf_enabled()
 
+    def _verify_txin_signatures(self, tx: Transaction, prev_txs: Mapping[int, Transaction]) -> bool:
+        if isinstance(tx, PartialTransaction):
+            tx = Transaction(tx.serialize())
+        ptx = PartialTransaction.from_tx(tx)
+        sighash_cache = SighashCache()
+        for txin_idx, prev_tx in prev_txs.items():
+            ptxin = ptx.inputs()[txin_idx]
+            prev_txout = prev_tx.outputs()[ptxin.prevout.out_idx]
+            ptxin.witness_utxo = prev_txout  # value and address, also if prev_tx is unsigned
+            ptxin.script_descriptor = self.get_script_descriptor_for_address(prev_txout.address)
+            if not ptxin.script_descriptor:
+                continue  # cannot verify, e.g. watch-only imported address
+            txin = tx.inputs()[txin_idx]
+            try:
+                items = txin.witness_elements() + [x[1] for x in script_GetOp(txin.script_sig or b'')]
+                sigs = [x for x in items if x and x[0] == 0x30 and 9 <= len(x) <= 73]
+                pubkeys = ptxin.pubkeys
+                if len(pubkeys) > 1:  # multisig: sigs are in script order
+                    script = ptxin.witness_script or ptxin.redeem_script
+                    pubkeys = [x[1] for x in script_GetOp(script) if x[1] in pubkeys]
+            except Exception:
+                return False
+            # like OP_CHECKMULTISIG: at most one verification per pubkey
+            sigs_iter = iter(sigs)
+            sig = next(sigs_iter, None)
+            for pubkey in pubkeys:
+                if sig is None:
+                    break
+                try:
+                    is_valid = ptx.verify_sig_for_txin(
+                        txin_index=txin_idx, pubkey_bytes=pubkey, sig=sig, sighash_cache=sighash_cache)
+                except Exception:
+                    is_valid = False
+                if is_valid:
+                    ptxin.sigs_ecdsa[pubkey] = sig
+                    sig = next(sigs_iter, None)
+            # the scriptSig and witness must be exactly what we would produce
+            try:
+                script_sig = Transaction.input_script(ptxin)
+                witness = Transaction.serialize_witness(ptxin)
+            except MissingSolutionPiece:
+                return False
+            if script_sig != (txin.script_sig or b'') or witness != (txin.witness or construct_witness([])):
+                return False
+        return True
+
     def cpfp(self, tx: Transaction, fee: int) -> Optional[PartialTransaction]:
         assert tx
         txid = tx.txid()
@@ -2833,7 +2899,9 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         # find out if we are replacing a txbatcher transaction
         prevout_str = tx.inputs()[0].prevout.to_str()
         batch = self.txbatcher.find_batch_by_prevout(prevout_str)
-        if batch:
+        # do not sign sweep inputs for a tx that pays outputs not in the batch,
+        # e.g. a fee bump of a replacement made by someone else
+        if batch and batch.has_only_batch_outputs(tx):
             batch.add_sweep_info_to_tx(tx)
 
         # sign with make_witness
@@ -3290,7 +3358,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             raise UserFacingException(_("Address not in wallet."))
         txin_type = self.get_txin_type(address)
         assert txin_type != "address"  # logic error, as this implies watching-only
-        if txin_type not in ['p2pkh', 'p2wpkh', 'p2wpkh-p2sh']:
+        if txin_type not in bitcoin.PUBKEYHASH_SCRIPT_TYPES:
             raise UserFacingException(
                 _("Cannot sign messages with this type of address:") +
                 " " + txin_type + "\n\n"
@@ -4348,15 +4416,29 @@ class Deterministic_Wallet(Abstract_Wallet):
 
     def enable_keystore(self, keystore: KeyStore, is_hardware_keystore: bool, password) -> None:
         assert self.can_enable_disable_keystore(keystore)
-        if not is_hardware_keystore and self.storage.is_encrypted_with_user_pw():
-            keystore.update_password(None, password)
-            self.db.put('use_encryption', True)
+        mpk = keystore.get_master_public_key()
+        target = next((k for k in self.get_keystores() if k.get_master_public_key() == mpk), None)
+        if target is None:
+            raise Exception("mismatching xpubs: keystore not found in wallet")
+        if not target.is_watching_only():
+            # e.g. replacing a keystore that has a seed would remove the seed from the wallet file
+            raise Exception("keystore to be replaced is not watching-only")
+        if not is_hardware_keystore:
+            if self.storage.is_encrypted_with_user_pw() or self.has_keystore_encryption():
+                self.check_password(password)
+                keystore.update_password(None, password)
+                self.db.set_keystore_encryption(True)
+            else:
+                # the wallet has no password.
+                self.db.set_keystore_encryption(False)
         self._update_keystore(keystore)
+        self.save_db()
 
     def disable_keystore(self, keystore: KeyStore) -> None:
         assert self.can_enable_disable_keystore(keystore)
-        assert not self.has_channels()
         assert keystore in self.get_keystores()
+        if self.lightning_needs_keystore():
+            raise Exception("cannot disable keystore: needed by lightning")
         if hasattr(keystore, 'thread') and keystore.thread:
             keystore.thread.stop()
         if self.storage.is_encrypted_with_hw_device():
@@ -4364,6 +4446,15 @@ class Deterministic_Wallet(Abstract_Wallet):
             self.update_password(password, None, encrypt_storage=False)
         new = keystore.watching_only_keystore()
         self._update_keystore(new)
+        if not self.can_have_keystore_encryption():
+            # no keystore left that can be encrypted. Without storage encryption,
+            # the wallet no longer has a password.
+            self.db.set_keystore_encryption(False)
+        if not self.has_password():
+            self.lock_wallet()  # clear in memory password
+        # save changes. force full rewrite to rm remnants of the seed
+        if self.storage and self.storage.file_exists():
+            self.db.write_and_force_consolidation()
 
 
 class Standard_Wallet(Simple_Wallet, Deterministic_Wallet):
@@ -4467,7 +4558,7 @@ class Multisig_Wallet(Deterministic_Wallet):
         else:
             raise Exception('keystore not found')
         self.keystores[name] = keystore
-        self.keystore = keystore
+        self.keystore = self.keystores['x1']
         self.save_keystore()
 
     def can_have_keystore_encryption(self):

@@ -30,11 +30,11 @@ from typing import (Dict, Optional, List, Tuple, Set, Iterable, NamedTuple, Sequ
                     Union, AbstractSet)
 import time
 from functools import partial
-
-import attr
+import dataclasses
 
 from . import bitcoin
 from . import constants
+from .bolt11 import BOLT11InvoiceException
 from .util import profiler, WalletFileException, multisig_type, TxMinedInfo, MyEncoder, bfh
 from .keystore import bip44_derivation
 from .transaction import (Transaction, TxOutpoint, tx_from_any, PartialTransaction, PartialTxOutput, BadHeaderMagic,
@@ -72,7 +72,7 @@ class WalletUnfinished(WalletFileException):
 # seed_version is now used for the version of the wallet file
 OLD_SEED_VERSION = 4        # electrum versions < 2.0
 NEW_SEED_VERSION = 11       # electrum versions >= 2.0
-FINAL_SEED_VERSION = 72     # electrum >= 2.7 will set this to prevent
+FINAL_SEED_VERSION = 74     # electrum >= 2.7 will set this to prevent
                             # old versions from overwriting new format
 
 
@@ -84,10 +84,10 @@ class TxFeesValue(NamedTuple):
 
 
 @stored_at('/db_metadata')
-@attr.s
+@dataclasses.dataclass
 class DBMetadata(StoredObject):
-    creation_timestamp = attr.ib(default=None, type=int)
-    first_electrum_version_used = attr.ib(default=None, type=str)
+    creation_timestamp: Optional[int] = None
+    first_electrum_version_used: Optional[str] = None
 
     def to_str(self) -> str:
         ts = self.creation_timestamp
@@ -132,6 +132,16 @@ for key in [
 
 
 class WalletDBUpgrader(Logger):
+    """
+    note: each DB upgrade (migration) should be as self-contained as practical.
+      The more a given convert_version_* depends on from outside the module,
+      the more likely future code changes break that specific DB upgrade.
+      - example:
+          invoices.py might have a global dict pr_expiration_values = {10*60: _('10 minutes'), 60*60: _('1 hour'), ...}.
+          Such a dict could change in future code, so if a given DB upgrade needs to reference it,
+          it is more robust to inline and duplicate it inside the migration code.
+    """
+
     def __init__(self, data: dict):
         Logger.__init__(self)
         self.data = data
@@ -262,6 +272,8 @@ class WalletDBUpgrader(Logger):
         self._convert_version_70()
         self._convert_version_71()
         self._convert_version_72()
+        self._convert_version_73()
+        self._convert_version_74()
         self.put('seed_version', FINAL_SEED_VERSION)  # just to be sure
 
     def _convert_wallet_type(self):
@@ -930,13 +942,18 @@ class WalletDBUpgrader(Logger):
         # the new key for all requests is a wallet address, not done here
         for name in ['invoices', 'payment_requests']:
             invoices = self.data.get(name, {})
-            for key, item in invoices.items():
+            for key, item in list(invoices.items()):
                 is_lightning = item['type'] == 2
                 lightning_invoice = item['invoice'] if is_lightning else None
                 outputs = item['outputs'] if not is_lightning else None
                 bip70 = item['bip70'] if not is_lightning else None
                 if is_lightning:
-                    lnaddr = decode_bolt11_invoice(item['invoice'])
+                    try:
+                        lnaddr = decode_bolt11_invoice(item['invoice'])
+                    except BOLT11InvoiceException as e:
+                        self.logger.warning(f"removing {name} item {key} that fails bolt11 decode: {e}")
+                        del invoices[key]
+                        continue
                     amount_msat = lnaddr.get_amount_msat()
                     timestamp = lnaddr.date
                     exp_delay = lnaddr.get_expiry()
@@ -997,7 +1014,12 @@ class WalletDBUpgrader(Logger):
         for key, item in list(requests.items()):
             lnaddr = item.get('lightning_invoice')
             if lnaddr:
-                lnaddr = decode_bolt11_invoice(lnaddr)
+                try:
+                    lnaddr = decode_bolt11_invoice(lnaddr)
+                except BOLT11InvoiceException as e:
+                    self.logger.warning(f"removing request {key} that fails bolt11 decode: {e}")
+                    del requests[key]
+                    continue
                 rhash = lnaddr.paymenthash.hex()
                 if key != rhash:
                     requests[rhash] = item
@@ -1047,7 +1069,12 @@ class WalletDBUpgrader(Logger):
             if lightning_invoice is None:
                 payment_hash = None
             else:
-                lnaddr = decode_bolt11_invoice(lightning_invoice)
+                try:
+                    lnaddr = decode_bolt11_invoice(lightning_invoice)
+                except BOLT11InvoiceException as e:
+                    self.logger.warning(f"removing request {key} that fails bolt11 decode: {e}")
+                    del requests[key]
+                    continue
                 payment_hash = lnaddr.paymenthash.hex()
             item['payment_hash'] = payment_hash
         self.data['seed_version'] = 51
@@ -1480,6 +1507,91 @@ class WalletDBUpgrader(Logger):
             channel_backups[channel_id] = _serialize_imported_channel_backup(storage)
         self.data['seed_version'] = 72
 
+    def _convert_version_73(self):
+        from .bolt11 import decode_bolt11_invoice
+        if not self._is_upgrade_method_needed(72, 72):
+            return
+        # remove invoices not passing stricter bolt11 invoice parsing (https://github.com/spesmilo/electrum/pull/10940)
+        invoices = self.data.get('invoices', {})
+        for key, item in list(invoices.items()):
+            lnaddr = item.get('lightning_invoice')
+            if lnaddr:
+                try:
+                    decode_bolt11_invoice(lnaddr)
+                except BOLT11InvoiceException as e:
+                    self.logger.warning(f"removing invoice {key} that fails bolt11 decode: {e}")
+                    del invoices[key]
+        self.data['seed_version'] = 73
+
+    def _convert_version_74(self):
+        """Stop storing the local channel keys that are derived from the channel seed, and
+        describe both sides of a channel with the same fields.
+
+        The channel seed and the multisig privkey (the one key we cannot re-derive) move
+        out of the config and into the channel itself, together with
+        funding_locked_received. What is left is a config that holds public data only,
+        and that has the same fields for LOCAL and for REMOTE.
+        """
+        from .bip32 import BIP32Node
+        from .lnutil import (LnKeyFamily, generate_keypair,
+                             derive_payment_basepoint, get_per_commitment_point_from_seed)
+        if not self._is_upgrade_method_needed(73, 73):
+            return
+
+        def check(channel_id: str, name: str, derived: bytes, stored: str) -> None:
+            # we must never drop a key that we would not be able to derive again
+            if derived.hex() == stored:
+                return
+            raise WalletFileException(
+                f"Cannot upgrade this wallet: the {name} of channel {channel_id} does not "
+                f"match the key derived from its channel_seed. This should not happen, "
+                f"please report it. To recover the channel, open this wallet with an "
+                f"older version of Electrum, and close the channel.")
+
+        for channel_id, c in self.data.get('channels', {}).items():
+            local_config = c['local_config']
+            remote_config = c['remote_config']
+            channel_seed = local_config.pop('channel_seed', None)
+            if channel_seed is None:
+                raise WalletFileException(
+                    f"Cannot upgrade this wallet: it contains a LN channel ({channel_id}) that lacks a channel_seed. "
+                    f"This can only happen for channels created from unreleased development git commits (before 2020 April, before 4.0). "
+                    f"You must check out the '4.8.2' tag, and close+delete this channel."
+                )
+            node = BIP32Node.from_rootseed(bfh(channel_seed), xtype='standard')
+            DERIVED_LOCAL_BASEPOINTS = {
+                'htlc_basepoint': LnKeyFamily.HTLC_BASE,
+                'delayed_basepoint': LnKeyFamily.DELAY_BASE,
+                'revocation_basepoint': LnKeyFamily.REVOCATION_BASE,
+            }
+            for name, key_family in DERIVED_LOCAL_BASEPOINTS.items():
+                keypair = generate_keypair(node, key_family)
+                check(channel_id, name, keypair.privkey, local_config[name].pop('privkey'))
+            secret_seed = generate_keypair(node, LnKeyFamily.REVOCATION_ROOT).privkey
+            check(channel_id, 'per_commitment_secret_seed', secret_seed,
+                  local_config.pop('per_commitment_secret_seed'))
+            if privkey := local_config['payment_basepoint'].pop('privkey', None):
+                # anchor channels: derived from a static wallet secret and the funding pubkey
+                ln_xprv = self.data.get('lightning_xprv') or self.data.get('lightning_privkey2')
+                static_payment_key = generate_keypair(BIP32Node.from_xkey(ln_xprv), LnKeyFamily.PAYMENT_BASE)
+                keypair = derive_payment_basepoint(
+                    static_payment_secret=static_payment_key.privkey,
+                    funding_pubkey=bfh(local_config['multisig_key']['pubkey']))
+                check(channel_id, 'payment_basepoint', keypair.privkey, privkey)
+            # our secrets move to the channel; multisig_key now only stores a pubkey,
+            # like the basepoints above
+            c['channel_seed'] = channel_seed
+            c['multisig_privkey'] = local_config['multisig_key'].pop('privkey')
+            c['funding_locked_received'] = local_config.pop('funding_locked_received')
+            # the remaining fields exist for both sides now. The signatures we sent for
+            # their ctx were not kept, so the remote config starts without them.
+            remote_config['current_commitment_signature'] = None
+            remote_config['current_htlc_signatures'] = ''
+            ctn = max(c['log']['1']['ctn'], 0)  # our oldest unrevoked ctn
+            local_config['current_per_commitment_point'] = get_per_commitment_point_from_seed(secret_seed, ctn).hex()
+            local_config['next_per_commitment_point'] = get_per_commitment_point_from_seed(secret_seed, ctn + 1).hex()
+        self.data['seed_version'] = 74
+
     def _convert_imported(self):
         if not self._is_upgrade_method_needed(0, 13):
             return
@@ -1669,7 +1781,8 @@ class WalletDB(JsonDB):
         return {int(n): (v, cb) for (n, (v, cb)) in d.items()}
 
     @modifier
-    def add_txi_addr(self, tx_hash: str, addr: str, ser: str, v: int) -> None:
+    def add_txi_addr(self, tx_hash: str, addr: str, ser: str, v: int) -> bool:
+        """Returns True if the item was newly added to the DB, or False if it was already there."""
         assert isinstance(tx_hash, str)
         assert isinstance(addr, str)
         assert isinstance(ser, str)
@@ -1679,7 +1792,10 @@ class WalletDB(JsonDB):
         d = self.txi[tx_hash]
         if addr not in d:
             d[addr] = {}
+        if d[addr].get(ser) == v:
+            return False
         d[addr][ser] = v
+        return True
 
     @modifier
     def add_txo_addr(self, tx_hash: str, addr: str, n: Union[int, str], v: int, is_coinbase: bool) -> None:

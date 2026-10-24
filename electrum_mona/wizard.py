@@ -16,7 +16,7 @@ from electrum_mona.storage import WalletStorage, StorageEncryptionVersion, Stora
 from electrum_mona.util import UserFacingException
 from electrum_mona.wallet_db import WalletDB
 from electrum_mona.bip32 import normalize_bip32_derivation, xpub_type
-from electrum_mona import descriptor, keystore, mnemonic, bitcoin
+from electrum_mona import keystore, mnemonic, bitcoin
 from electrum_mona.mnemonic import is_any_2fa_seed_type, can_seed_have_passphrase
 from electrum_mona.util import multisig_type
 
@@ -300,6 +300,9 @@ class KeystoreWizard(AbstractWizard):
     def is_hardware(self, wizard_data: dict) -> bool:
         return wizard_data['keystore_type'] == 'hardware'
 
+    def supports_2fa(self) -> bool:
+        return False
+
     def wallet_password_view(self, wizard_data: dict) -> str:
         if self.is_hardware(wizard_data) and wizard_data['wallet_type'] == 'standard':
             return 'wallet_password_hardware'
@@ -345,6 +348,9 @@ class KeystoreWizard(AbstractWizard):
         # check if seed matches wallet type
         if wallet_type == '2fa' and not is_any_2fa_seed_type(seed_type):
             seed_valid = False
+        elif wallet_type == 'standard' and is_any_2fa_seed_type(seed_type):
+            # wizard will redirect
+            seed_valid = self.supports_2fa()
         elif wallet_type == 'standard' and seed_type not in ['old', 'standard', 'segwit', 'bip39', 'slip39']:
             seed_valid = False
         elif wallet_type == 'multisig' and seed_type not in ['standard', 'segwit', 'bip39', 'slip39']:
@@ -433,10 +439,10 @@ class NewWalletWizard(KeystoreWizard):
                 'last': lambda d: self.is_single_password() and not self.is_multisig(d)
             },
             'have_seed': {
-                'next': lambda d: 'have_ext' if self.wants_ext(d) else self.on_have_or_confirm_seed(d),
-                'accept': lambda d: None if self.wants_ext(d) else self.maybe_master_pubkey(d),
+                'next': self.on_have_seed,
+                'accept': self.on_accept_have_seed,
                 'last': lambda d: self.is_single_password() and not
-                                    (self.needs_derivation_path(d) or self.is_multisig(d) or self.wants_ext(d)),
+                                    (self.needs_derivation_path(d) or self.is_multisig(d) or self.wants_ext(d) or self.wants_2fa(d)),
             },
             'have_ext': {
                 'next': self.on_have_or_confirm_seed,
@@ -529,6 +535,30 @@ class NewWalletWizard(KeystoreWizard):
             'masterkey': 'have_master_key',
             'hardware': 'choose_hardware_device'
         }.get(t)
+
+    def supports_2fa(self) -> bool:
+        return True
+
+    def wants_2fa(self, wizard_data: dict) -> bool:
+        # True if the user entered a 2fa seed while restoring a wallet of type 'standard'
+        return (wizard_data['wallet_type'] == 'standard'
+                and is_any_2fa_seed_type(wizard_data.get('seed_type', ''))
+                and self.supports_2fa())
+
+    def on_have_seed(self, wizard_data: dict) -> str:
+        if wizard_data['wallet_type'] == '2fa':  # redirected by on_accept_have_seed
+            return 'trustedcoin_have_ext' if self.wants_ext(wizard_data) else 'trustedcoin_keep_disable'
+        elif self.wants_ext(wizard_data):
+            return 'have_ext'
+        else:
+            return self.on_have_or_confirm_seed(wizard_data)
+
+    def on_accept_have_seed(self, wizard_data: dict) -> None:
+        if self.wants_2fa(wizard_data):
+            wizard_data['wallet_type'] = '2fa'
+            return
+        if not self.wants_ext(wizard_data):
+            self.maybe_master_pubkey(wizard_data)
 
     def on_have_or_confirm_seed(self, wizard_data: dict) -> str:
         if self.needs_derivation_path(wizard_data):
@@ -701,13 +731,13 @@ class NewWalletWizard(KeystoreWizard):
                 keys = keystore.get_private_keys(data['private_key_list'])
                 for pk in keys:
                     assert bitcoin.is_private_key(pk)
-                    txin_type, pubkey = k.import_privkey(pk, None)
                     try:
-                        addr = bitcoin.pubkey_to_address(txin_type, pubkey)
-                    except descriptor.NotLegacySinglesigScriptType as e:
+                        txin_type, pubkey = k.import_privkey(pk, None)
+                    except NotImplementedError as e:
                         raise UserFacingException(
-                            _("Importing individual private keys of type '{}' is not supported.").format(txin_type),
+                            _("Importing individual private keys of type '{}' is not supported.").format(e),
                         ) from e
+                    addr = bitcoin.pubkey_to_address(txin_type, pubkey)
                     addresses[addr] = {'type': txin_type, 'pubkey': pubkey}
             elif 'address_list' in data:
                 for addr in data['address_list'].split():

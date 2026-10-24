@@ -18,3 +18,5 @@ in the top-level `pubkeys` folder.
 or
 
 You can use Keybase. https://keybase.io/wakiyamap
+
+Please also include what name we should use for you when giving credit for the report.

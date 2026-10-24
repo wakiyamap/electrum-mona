@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Optional, Dict, Sequence, Tuple, Iterable, Lis
 from decimal import Decimal
 import math
 import time
+import dataclasses
 
-import attr
 import aiohttp
 
 from electrum_ecc import ECPrivkey
@@ -195,22 +195,22 @@ class SwapServerError(Exception):
         return _("The swap server errored or is unreachable.")
 
 
-@attr.s(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class SwapFees:
-    percentage = attr.ib(type=Decimal)
-    mining_fee = attr.ib(type=int)
-    min_amount = attr.ib(type=int)
-    max_forward = attr.ib(type=int)
-    max_reverse = attr.ib(type=int)
+    percentage: Decimal
+    mining_fee: int
+    min_amount: int
+    max_forward: int
+    max_reverse: int
 
 
-@attr.frozen
+@dataclasses.dataclass(frozen=True)
 class SwapOffer:
-    pairs = attr.ib(type=SwapFees)
-    relays = attr.ib(type=list[str])
-    pow_bits = attr.ib(type=int)
-    server_pubkey = attr.ib(type=str)
-    timestamp = attr.ib(type=int)
+    pairs: SwapFees
+    relays: list[str]
+    pow_bits: int
+    server_pubkey: str
+    timestamp: int
 
     @property
     def server_npub(self):
@@ -218,21 +218,28 @@ class SwapOffer:
 
 
 @stored_at('/submarine_swaps/*')
-@attr.s
+@dataclasses.dataclass
 class SwapData(StoredObject):
-    is_reverse = attr.ib(type=bool)  # for whoever is running code (PoV of client or server)
-    locktime = attr.ib(type=int)  # onchain, abs
-    onchain_amount = attr.ib(type=int)  # in sats
-    lightning_amount = attr.ib(type=int)  # in sats
-    redeem_script = attr.ib(type=bytes, converter=hex_to_bytes)
-    preimage = attr.ib(type=Optional[bytes], converter=hex_to_bytes)
-    prepay_hash = attr.ib(type=Optional[bytes], converter=hex_to_bytes)
-    privkey = attr.ib(type=bytes, converter=hex_to_bytes)
-    lockup_address = attr.ib(type=str)
-    claim_to_output = attr.ib(type=Optional[Tuple[str, int]])  # address, amount to claim the funding utxo to
-    funding_txid = attr.ib(type=Optional[str])
-    spending_txid = attr.ib(type=Optional[str])
-    is_redeemed = attr.ib(type=bool)
+    is_reverse: bool  # for whoever is running code (PoV of client or server)
+    locktime: int  # onchain, abs
+    onchain_amount: int  # in sats
+    lightning_amount: int  # in sats
+    redeem_script: bytes
+    preimage: Optional[bytes]
+    prepay_hash: Optional[bytes]
+    privkey: bytes
+    lockup_address: str
+    claim_to_output: Optional[Tuple[str, int]]  # address, amount to claim the funding utxo to
+    funding_txid: Optional[str]
+    spending_txid: Optional[str]
+    is_redeemed: bool
+
+    def __post_init__(self):
+        # bytes are stored as hex
+        self.redeem_script = hex_to_bytes(self.redeem_script)
+        self.preimage = hex_to_bytes(self.preimage)
+        self.prepay_hash = hex_to_bytes(self.prepay_hash)
+        self.privkey = hex_to_bytes(self.privkey)
 
     _funding_prevout = None  # type: Optional[TxOutpoint]  # for RBF
     _payment_hash = None
@@ -464,40 +471,45 @@ class SwapManager(Logger):
         # we couldn't even connect to the relays, this transport is useless. maybe network issues.
         return False
 
-    def get_message_for_swap_change(self, swap_transport, tx):
-        """ UI support for send-change-to-lightning.
-        """
-        msg = ''
+    def get_message_for_swap_change(self, swap_transport, tx) -> str:
+        """ UI support for send-change-to-lightning. """
         if swap_transport is not None and swap_transport.ongoing_connection_attempt:
-            msg = _("Fetching submarine swap providers...")
-        elif dummy_output := tx.get_dummy_output(DummyAddress.SWAP):
-            msg = _('Will send change to lightning')
+            return _("Fetching swap providers...")
+
+        msg = _("Change stays on-chain")
+        if dummy_output := tx.get_dummy_output(DummyAddress.SWAP):
+            msg = _('Sending change to Lightning balance')
             if self.is_initialized.is_set() and isinstance(dummy_output.value, int):
                 ln_amount_we_recv = self.get_recv_amount(send_amount=dummy_output.value,
                                                          is_reverse=False)
                 if ln_amount_we_recv:
                     swap_fees = dummy_output.value - ln_amount_we_recv
-                    msg += " [" + _("Swap fees:") + " " + self.config.format_amount_and_units(swap_fees) + "]."
+                    msg += " [" + _("Swap fees:") + " " + self.config.format_amount_and_units(swap_fees) + "]"
         elif not tx.has_change():
-            msg = _('No change output, so no need for swap')
+            return ""
         else:
+            reason = ""
             change_amount = sum(c.value for c in tx.get_change_outputs() if isinstance(c.value, int))
             if change_amount > int(self.wallet.lnworker.num_sats_can_receive()):
-                msg = _("Your channels cannot receive this amount.")
+                reason = _("change amount is larger than your Lightning receive capacity")
             elif self.is_initialized.is_set():
                 min_amount = self.get_min_amount()
                 max_amount = self.get_provider_max_reverse_amount()
                 if change_amount < min_amount:
-                    msg = _("Below the swap providers minimum value of {}.").format(
+                    reason = _("amount below the swap provider's minimum value of {}").format(
                         self.config.format_amount_and_units(min_amount)
                     )
                 elif change_amount > max_amount:
-                    msg = _('Change amount exceeds the swap providers maximum value of {}.').format(
+                    reason = _("amount exceeds the swap provider's maximum value of {}").format(
                         self.config.format_amount_and_units(max_amount)
                     )
+            elif self.config.SWAPSERVER_NPUB or self.config.SWAPSERVER_URL:
+                reason = _("the configured swap provider is not available")
             else:
-                msg = _('Will not send change to Lightning')
-        return msg
+                reason = _("select a swap provider if you want to send it to Lightning")
+            if reason:
+                msg += ", " + reason
+        return msg + "."
 
     async def set_nostr_proof_of_work(self) -> None:
         current_pow = get_nostr_ann_pow_amount(
@@ -795,7 +807,7 @@ class SwapManager(Logger):
 
     def add_lnwatcher_callback(self, swap: SwapData) -> None:
         callback = lambda: self._claim_swap(swap)
-        self.lnwatcher.add_callback(swap.lockup_address, callback)
+        self.lnwatcher.add_address_callback(swap.lockup_address, callback)
 
     async def hold_invoice_callback(self, payment_hash: bytes) -> None:
         # note: this assumes the wallet has been unlocked
@@ -1940,15 +1952,17 @@ class NostrTransport(SwapServerTransport):
         return self
 
     def __exit__(self, ex_type, ex, tb):
-        fut = asyncio.run_coroutine_threadsafe(self.stop(), self.network.asyncio_loop)
-        fut.result(timeout=5)
+        self.destroy()
 
     async def __aenter__(self):
         self._main_loop_task = asyncio.create_task(self.main_loop())
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await wait_for2(self.stop(), timeout=5)
+        try:  # shield so stop() doesn't get canceled on timeout
+            await wait_for2(asyncio.shield(self.stop()), timeout=5)
+        except asyncio.TimeoutError:
+            self.logger.debug("nostr transport shutdown is slow")
 
     def destroy(self):
         super().destroy()

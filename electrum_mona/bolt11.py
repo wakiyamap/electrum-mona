@@ -7,13 +7,13 @@ import time
 from hashlib import sha256
 from binascii import hexlify
 from decimal import Decimal
-from typing import Optional, TYPE_CHECKING, Type, Dict, Any, Sequence, Tuple
+from typing import Optional, TYPE_CHECKING, Type, Dict, Any, Sequence, Tuple, List
 import random
 
 import electrum_ecc as ecc
 
 from .bitcoin import hash160_to_b58_address, b58_address_to_hash160, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
-from .segwit_addr import bech32_encode, bech32_decode, CHARSET, CHARSET_INVERSE, convertbits
+from .segwit_addr import bech32_encode, bech32_decode, CHARSET, CHARSET_INVERSE, convertbits, INVALID_BECH32
 from . import segwit_addr
 from . import constants
 from .constants import AbstractNet
@@ -21,6 +21,8 @@ from .bitcoin import COIN
 
 if TYPE_CHECKING:
     from .lnutil import LnFeatures
+
+TIMESTAMP_SANE_MAX = 2**35 - 1
 
 
 class BOLT11InvoiceException(Exception): pass
@@ -47,7 +49,7 @@ def shorten_amount(amount):
         unit = ''
     return str(amount) + unit
 
-def unshorten_amount(amount) -> Decimal:
+def unshorten_amount(amount: str) -> Decimal:
     """ Given a shortened amount, convert it into a decimal
     """
     # BOLT #11:
@@ -63,14 +65,18 @@ def unshorten_amount(amount) -> Decimal:
         'u': 10**6,
         'm': 10**3,
     }
-    unit = str(amount)[-1]
+
     # BOLT #11:
     # A reader SHOULD fail if `amount` contains a non-digit, or is followed by
     # anything except a `multiplier` in the table above.
-    if not re.fullmatch("\\d+[pnum]?", str(amount)):
+    if not re.fullmatch(f"[1-9][0-9]*[{''.join(units)}]?", amount):
         raise BOLT11DecodeException("Invalid amount '{}'".format(amount))
 
+    unit = amount[-1]
     if unit in units.keys():
+        # if multiplier is `p` and the last decimal of `amount` is not 0: MUST fail the payment.
+        if unit == 'p' and amount[-2] != '0':
+            raise BOLT11DecodeException("Sub-millisatoshi amount '{}'".format(amount))
         return Decimal(amount[:-1]) / units[unit]
     else:
         return Decimal(amount)
@@ -96,13 +102,24 @@ def encode_fallback_addr(fallback: str, net: Type[AbstractNet]) -> Sequence[int]
 
 
 def parse_fallback_addr(data5: Sequence[int], net: Type[AbstractNet]) -> Optional[str]:
+    """Returns None if the fallback address cannot be parsed."""
+    if not data5:
+        return None
     wver = data5[0]
-    data8 = bytes(convertbits(data5[1:], 5, 8, False))
+    data8 = convertbits(data5[1:], 5, 8, False)
+    if data8 is None:  # invalid padding
+        return None
+    data8 = bytes(data8)
     if wver == 17:
+        if len(data8) != 20:  # hash160
+            return None
         addr = hash160_to_b58_address(data8, net.ADDRTYPE_P2PKH)
     elif wver == 18:
+        if len(data8) != 20:  # hash160
+            return None
         addr = hash160_to_b58_address(data8, net.ADDRTYPE_P2SH)
     elif wver <= 16:
+        # note: encode_segwit_address checks the witness program length
         addr = segwit_addr.encode_segwit_address(net.SEGWIT_HRP, wver, data8)
     else:
         return None
@@ -131,7 +148,7 @@ def int_to_data5(val: int, *, bit_len: int | None = None) -> Sequence[int]:
         ret.append(val % 32)
         val //= 32
     if bit_len is not None:
-        ret.extend([0] * (len(ret) - bit_len // 5))
+        ret.extend([0] * (bit_len // 5 - len(ret)))
     ret.reverse()
     return ret
 
@@ -157,7 +174,7 @@ def pull_tagged(data5: bytearray) -> Tuple[str, Sequence[int]]:
 
 
 def encode_bolt11_invoice(addr: 'BOLT11Addr', privkey) -> str:
-    if addr.amount:
+    if addr.amount is not None:
         amount = addr.net.BOLT11_HRP + shorten_amount(addr.amount)
     else:
         amount = addr.net.BOLT11_HRP if addr.net else ''
@@ -197,25 +214,20 @@ def encode_bolt11_invoice(addr: 'BOLT11Addr', privkey) -> str:
                 route += int.to_bytes(feerate, length=4, byteorder="big", signed=False)
                 route += int.to_bytes(cltv, length=2, byteorder="big", signed=False)
             data5 += tagged8('r', route)
-        elif k == 't':
-            pubkey, feebase, feerate, cltv = v
-            route = bytearray()
-            route += pubkey
-            route += int.to_bytes(feebase, length=4, byteorder="big", signed=False)
-            route += int.to_bytes(feerate, length=4, byteorder="big", signed=False)
-            route += int.to_bytes(cltv, length=2, byteorder="big", signed=False)
-            data5 += tagged8('t', route)
         elif k == 'f':
             if v is not None:
                 data5 += encode_fallback_addr(v, addr.net)
         elif k == 'd':
-            # truncate to max length: 1024*5 bits = 639 bytes
-            data5 += tagged8('d', v.encode()[0:639])
+            # truncate to max length: 1024*5 bits = 639 bytes, drop trailing, sliced utf-8 char
+            data5 += tagged8('d', v.encode()[0:639].decode('utf-8', errors='ignore').encode())
         elif k == 'x':
             expirybits = int_to_data5(v)
             data5 += tagged5('x', expirybits)
         elif k == 'h':
-            data5 += tagged8('h', sha256(v.encode('utf-8')).digest())
+            deschash = v if isinstance(v, bytes) else sha256(v.encode('utf-8')).digest()
+            if len(deschash) != 32:
+                raise BOLT11EncodeException(f"'h' tag must be a description or its sha256, not {v!r}")
+            data5 += tagged8('h', deschash)
         elif k == 'n':
             data5 += tagged8('n', v)
         elif k == 'c':
@@ -255,9 +267,16 @@ def encode_bolt11_invoice(addr: 'BOLT11Addr', privkey) -> str:
 
 
 class BOLT11Addr:
-    def __init__(self, *, paymenthash: bytes = None, amount=None, net: Type[AbstractNet] = None, tags=None, date=None,
-                 payment_secret: bytes = None):
-        self.date = int(time.time()) if not date else int(date)
+    def __init__(
+        self, *,
+        paymenthash: bytes = None,
+        amount: Optional[int | Decimal] = None,
+        net: Type[AbstractNet] = None,
+        tags: Optional[List[Tuple[str, Any]]] = None,
+        date: Optional[int | float] = None,
+        payment_secret: bytes = None
+    ):
+        self.date = int(time.time()) if date is None else int(date)
         self.tags = [] if not tags else tags
         self.unknown_tags = []
         self.paymenthash = paymenthash
@@ -265,26 +284,43 @@ class BOLT11Addr:
         self.signature = None
         self.pubkey = None
         self.net = constants.net if net is None else net  # type: Type[AbstractNet]
-        self._amount = amount  # type: Optional[Decimal]  # in bitcoins
+        self.amount = amount  # type: Optional[int | Decimal]  # in bitcoins
 
     @property
     def amount(self) -> Optional[Decimal]:
         return self._amount
 
     @amount.setter
-    def amount(self, value):
-        if not (isinstance(value, Decimal) or value is None):
-            raise BOLT11InvoiceException(f"amount must be Decimal or None, not {value!r}")
+    def amount(self, value: Optional[int | Decimal]):
+        if not (isinstance(value, (int, Decimal)) or value is None):
+            raise BOLT11InvoiceException(f"amount must be Decimal, int or None, not {value!r}")
         if value is None:
             self._amount = None
             return
+        if isinstance(value, int):
+            value = Decimal(value)
         assert isinstance(value, Decimal)
-        if value.is_nan() or not (0 <= value <= TOTAL_COIN_SUPPLY_LIMIT_IN_BTC):
+        if value.is_nan() or not (0 < value <= TOTAL_COIN_SUPPLY_LIMIT_IN_BTC):
             raise BOLT11InvoiceException(f"amount is out-of-bounds: {value!r} BTC")
         if value * 10**12 % 10:
             # max resolution is millisatoshi
             raise BOLT11InvoiceException(f"Cannot encode {value!r}: too many decimal places")
         self._amount = value
+
+    @property
+    def date(self) -> int:
+        return self._date
+
+    @date.setter
+    def date(self, value: int | float):
+        if value is None or not isinstance(value, (int, float)):
+            raise BOLT11InvoiceException(f"date must be int or float, not {value!r}")
+        if isinstance(value, float):
+            # e.g. from time.time()
+            value = int(value)
+        if not 0 <= value <= TIMESTAMP_SANE_MAX:
+            raise BOLT11InvoiceException(f"date must be in [0; {TIMESTAMP_SANE_MAX!r}]: {value}")
+        self._date = value
 
     def get_amount_sat(self) -> Optional[Decimal]:
         # note that this has msat resolution potentially
@@ -292,9 +328,8 @@ class BOLT11Addr:
             return None
         return self.amount * COIN
 
-    def get_routing_info(self, tag):
-        # note: tag will be 't' for trampoline
-        r_tags = list(filter(lambda x: x[0] == tag, self.tags))
+    def get_routing_info(self):
+        r_tags = list(filter(lambda x: x[0] == 'r', self.tags))
         # strip the tag type, it's implicitly 'r' now
         r_tags = list(map(lambda x: x[1], r_tags))
         # if there are multiple hints, we will use the first one that works,
@@ -392,7 +427,7 @@ class BOLT11Addr:
             'tags': self.tags,
             'unknown_tags': self.unknown_tags,
         }
-        if ln_routing_info := self.get_routing_info('r'):
+        if ln_routing_info := self.get_routing_info():
             d['r_tags'] = self.format_bolt11_routing_info_as_human_readable(ln_routing_info)
         return d
 
@@ -405,16 +440,36 @@ class SerializableKey:
 
 
 def decode_bolt11_invoice(invoice: str, *, verbose=False, net=None) -> BOLT11Addr:
-    """Parses a string into a BOLT11Addr object.
-    Can raise BOLT11DecodeException or IncompatibleOrInsaneFeatures.
+    """Parses a bech32 encoded string into a BOLT11Addr object.
+    Can raise BOLT11DecodeException.
     """
+
+    def _convertbits_tag(
+            tag: str,
+            data5: Sequence[int],
+            *args,
+            length_range: Optional[Tuple[int, int]] = None,
+    ) -> Sequence[int]:
+        if length_range is not None and not length_range[0] <= len(data5) <= length_range[1]:
+            raise BOLT11DecodeException(
+                f"Invalid data_length for tag '{tag}': {len(data5)} (expected {length_range})")
+        if (intseq := convertbits(data5, *args)) is None:
+            raise BOLT11DecodeException(f"Failed to decode tag '{tag}'")
+        return intseq
+
+    def _check_minimal_data5(tag: str, data5: Sequence[int]) -> None:
+        """ a field is 'minimal' if len>0 and the first int is non-zero"""
+        if len(data5) > 0 and data5[0] == 0:
+            raise BOLT11DecodeException(f"Non-minimal data_length for tag '{tag}'")
+
     if net is None:
         net = constants.net
     decoded_bech32 = bech32_decode(invoice, ignore_long_length=True)
+    if decoded_bech32 is INVALID_BECH32:
+        raise BOLT11DecodeException("Invalid bech32 checksum")
     hrp = decoded_bech32.hrp
     data5 = decoded_bech32.data  # "5" as in list of 5-bit integers
-    if decoded_bech32.encoding is None:
-        raise BOLT11DecodeException("Bad bech32 checksum")
+    assert data5 is not None
     if decoded_bech32.encoding != segwit_addr.Encoding.BECH32:
         raise BOLT11DecodeException("Bad bech32 encoding: must be using vanilla BECH32")
 
@@ -444,21 +499,30 @@ def decode_bolt11_invoice(invoice: str, *, verbose=False, net=None) -> BOLT11Add
     # A reader SHOULD indicate if amount is unspecified, otherwise it MUST
     # multiply `amount` by the `multiplier` value (if any) to derive the
     # amount required for payment.
-    if amountstr != '':
-        addr.amount = unshorten_amount(amountstr)
+    try:
+        if amountstr != '':
+            addr.amount = unshorten_amount(amountstr)
 
-    addr.date = int_from_data5(data5_remaining[:7])
-    data5_remaining = data5_remaining[7:]
+        addr.date = int_from_data5(data5_remaining[:7])
+        data5_remaining = data5_remaining[7:]
+    except BOLT11InvoiceException as e:
+        # raise as decode exception, as amount/date comes from the encoded invoice
+        raise BOLT11DecodeException(f"Failed to decode invoice: {e}") from e
 
     while data5_remaining:
-        tag, tagdata = pull_tagged(data5_remaining)  # mutates arg
+        try:
+            tag, tagdata = pull_tagged(data5_remaining)  # mutates arg
+        except ValueError as e:
+            raise BOLT11DecodeException(f"Corrupt tag data: {str(e)}")
 
         # BOLT #11:
         #
-        # A reader MUST skip over unknown fields, an `f` field with unknown
-        # `version`, or a `p`, `h`, or `n` field which does not have
-        # `data_length` 52, 52, or 53 respectively.
-        data_length = len(tagdata)
+        # A reader:
+        #   - MUST skip over `f` fields that use an unknown `version`.
+        #   - MUST fail the payment if any field with fixed `data_length` (`p`, `h`, `s`, `n`)
+        #     does not have the correct length (52, 52, 52, 53).
+        # note: the fixed-length check is done via _convertbits_tag(length_range=...) below.
+        #       Until bolts#1243 (2025-06) the spec instead required *skipping* such fields
 
         if tag == 'r':
             # BOLT #11:
@@ -471,7 +535,7 @@ def decode_bolt11_invoice(invoice: str, *, verbose=False, net=None) -> BOLT11Add
             #    * `feebase` (32 bits, big-endian)
             #    * `feerate` (32 bits, big-endian)
             #    * `cltv_expiry_delta` (16 bits, big-endian)
-            tagdata = convertbits(tagdata, 5, 8, False)
+            tagdata = _convertbits_tag(tag, tagdata, 5, 8, False)
             if not tagdata:
                 continue
             route = []
@@ -490,22 +554,6 @@ def decode_bolt11_invoice(invoice: str, *, verbose=False, net=None) -> BOLT11Add
                     route.append((pubkey, scid, feebase, feerate, cltv))
             if route:
                 addr.tags.append(('r',route))
-        elif tag == 't':
-            tagdata = convertbits(tagdata, 5, 8, False)
-            if not tagdata:
-                continue
-            route = []
-            with io.BytesIO(bytes(tagdata)) as s:
-                pubkey = s.read(33)
-                feebase = s.read(4)
-                feerate = s.read(4)
-                cltv = s.read(2)
-                if len(cltv) == 2:  # no EOF
-                    feebase = int.from_bytes(feebase, byteorder="big")
-                    feerate = int.from_bytes(feerate, byteorder="big")
-                    cltv = int.from_bytes(cltv, byteorder="big")
-                    route.append((pubkey, feebase, feerate, cltv))
-            addr.tags.append(('t', route))
         elif tag == 'f':
             fallback = parse_fallback_addr(tagdata, addr.net)
             if fallback:
@@ -514,42 +562,48 @@ def decode_bolt11_invoice(invoice: str, *, verbose=False, net=None) -> BOLT11Add
                 # Incorrect version.
                 addr.unknown_tags.append((tag, tagdata))
                 continue
-
         elif tag == 'd':
-            addr.tags.append(('d', bytes(convertbits(tagdata, 5, 8, False)).decode('utf-8')))
-
+            if addr.get_tag('d') is not None:
+                raise BOLT11DecodeException("Unexpected multiple 'd' tags")
+            try:
+                addr.tags.append(('d', bytes(_convertbits_tag(tag, tagdata, 5, 8, False)).decode('utf-8')))
+            except UnicodeDecodeError as e:
+                raise BOLT11DecodeException(f"Invalid UTF-8 content in invoice: {str(e)}")
         elif tag == 'h':
-            if data_length != 52:
-                addr.unknown_tags.append((tag, tagdata))
-                continue
-            addr.tags.append(('h', bytes(convertbits(tagdata, 5, 8, False))))
-
+            if addr.get_tag('h') is not None:
+                raise BOLT11DecodeException("Unexpected multiple 'h' tags")
+            addr.tags.append(
+                ('h', bytes(_convertbits_tag(tag, tagdata, 5, 8, False, length_range=(52, 52))))
+            )
         elif tag == 'x':
+            # MUST use the minimum data_length possible
+            _check_minimal_data5(tag, tagdata)
             addr.tags.append(('x', int_from_data5(tagdata)))
-
         elif tag == 'p':
-            if data_length != 52:
-                addr.unknown_tags.append((tag, tagdata))
-                continue
-            addr.paymenthash = bytes(convertbits(tagdata, 5, 8, False))
-
+            # MUST include exactly one 'p' field
+            if addr.paymenthash is not None:
+                raise BOLT11DecodeException("Unexpected 'p' tag")
+            addr.paymenthash = bytes(_convertbits_tag(tag, tagdata, 5, 8, False, length_range=(52, 52)))
         elif tag == 's':
-            if data_length != 52:
-                addr.unknown_tags.append((tag, tagdata))
-                continue
-            addr.payment_secret = bytes(convertbits(tagdata, 5, 8, False))
-
+            # MUST include exactly one 's' field
+            if addr.payment_secret is not None:
+                raise BOLT11DecodeException("Unexpected 's' tag")
+            addr.payment_secret = bytes(_convertbits_tag(tag, tagdata, 5, 8, False, length_range=(52, 52)))
         elif tag == 'n':
-            if data_length != 53:
-                addr.unknown_tags.append((tag, tagdata))
-                continue
-            pubkeybytes = bytes(convertbits(tagdata, 5, 8, False))
+            # MAY include one n field
+            if addr.pubkey is not None:
+                raise BOLT11DecodeException("Unexpected 'n' tag")
+            pubkeybytes = bytes(_convertbits_tag(tag, tagdata, 5, 8, False, length_range=(53, 53)))
             addr.pubkey = pubkeybytes
-
+            addr.tags.append(('n', pubkeybytes))
         elif tag == 'c':
+            # MUST use the minimum data_length possible
+            _check_minimal_data5(tag, tagdata)
             addr.tags.append(('c', int_from_data5(tagdata)))
-
         elif tag == '9':
+            # MUST use the minimum data_length possible to encode the non-zero bits,
+            # with no 0 field-elements at the start
+            _check_minimal_data5(tag, tagdata)
             features = int_from_data5(tagdata)
             addr.tags.append(('9', features))
             # note: The features are not validated here in the parser,
@@ -559,6 +613,16 @@ def decode_bolt11_invoice(invoice: str, *, verbose=False, net=None) -> BOLT11Add
             #       can happen to features not-yet-merged-to-BOLTs (e.g. trampoline feature bit was moved and reused).
         else:
             addr.unknown_tags.append((tag, tagdata))
+
+    # MUST include exactly one 'p' field
+    if addr.paymenthash is None:
+        raise BOLT11DecodeException("Missing 'p' tag")
+    # MUST include exactly one 's' field
+    if addr.payment_secret is None:
+        raise BOLT11DecodeException("Missing 's' tag")
+    # MUST include either exactly one d or exactly one h field
+    if bool(addr.get_tag('d') is not None) + bool(addr.get_tag('h') is not None) != 1:
+        raise BOLT11DecodeException("Exactly one of 'd' tag or 'h' tag must be present in invoice")
 
     if verbose:
         print('hex of signature data (32 byte r, 32 byte s): {}'
@@ -575,20 +639,25 @@ def decode_bolt11_invoice(invoice: str, *, verbose=False, net=None) -> BOLT11Add
     # field specified below).
     addr.signature = sigdecoded[:65]
     hrp_hash = sha256(hrp.encode("ascii") + bytes(convertbits(data5, 5, 8, True))).digest()
-    if addr.pubkey:  # Specified by `n`
-        # BOLT #11:
-        #
-        # A reader MUST use the `n` field to validate the signature instead of
-        # performing signature recovery if a valid `n` field is provided.
-        if not ecc.ECPubkey(addr.pubkey).ecdsa_verify(sigdecoded[:64], hrp_hash):
-            raise BOLT11DecodeException("bad signature")
-        pubkey_copy = addr.pubkey
+    try:
+        if addr.pubkey:  # Specified by `n`
+            # BOLT #11:
+            #
+            # A reader MUST use the `n` field to validate the signature instead of
+            # performing signature recovery if a valid `n` field is provided.
+            if not ecc.ECPubkey(addr.pubkey).ecdsa_verify(sigdecoded[:64], hrp_hash):
+                raise BOLT11DecodeException("bad signature")
+            pubkey_copy = addr.pubkey
 
-        class WrappedBytesKey:
-            serialize = lambda: pubkey_copy
+            class WrappedBytesKey:
+                serialize = lambda: pubkey_copy
 
-        addr.pubkey = WrappedBytesKey
-    else: # Recover pubkey from signature.
-        addr.pubkey = SerializableKey(ecc.ECPubkey.from_ecdsa_sig64(sigdecoded[:64], sigdecoded[64], hrp_hash))
+            addr.pubkey = WrappedBytesKey
+        else: # Recover pubkey from signature.
+            addr.pubkey = SerializableKey(ecc.ECPubkey.from_ecdsa_sig64(sigdecoded[:64], sigdecoded[64], hrp_hash))
+    except Exception as e:
+        if isinstance(e, BOLT11DecodeException):
+            raise
+        raise BOLT11DecodeException(f"Invalid signature: {e}") from e
 
     return addr

@@ -37,7 +37,7 @@ from asyncio import CancelledError
 from collections import defaultdict
 from functools import wraps
 from decimal import Decimal, InvalidOperation
-from typing import Optional, TYPE_CHECKING, Dict, List, Any, Union
+from typing import Optional, TYPE_CHECKING, Dict, List, Any, Union, Callable
 import os
 import re
 
@@ -690,9 +690,8 @@ class Commands(Logger):
         arg:str:address:Monacoin address
         """
         if isinstance(address, str):
-            address = address.strip()
-        if is_address(address):
-            return wallet.export_private_key(address, password)
+            # a single address
+            return wallet.export_private_key(address.strip(), password)
         domain = address
         return [wallet.export_private_key(address, password) for address in domain]
 
@@ -806,8 +805,8 @@ class Commands(Logger):
         # instead of using pip, hence it is useful to list them for debugging.
         from electrum_ecc import ecc_fast
         ret.update(ecc_fast.version_info())
-        from . import qrscanner
-        ret.update(qrscanner.version_info())
+        from . import qrreader
+        ret.update(qrreader.version_info())
         ret.update(DeviceMgr.version_info())
         ret.update(crypto.version_info())
         # add some special cases
@@ -1064,18 +1063,9 @@ class Commands(Logger):
         fx = self.daemon.fx if self.daemon else FxThread(config=self.config)
         return json_normalize(wallet.get_onchain_capital_gains(fx, **kwargs))
 
-    @command('wp')
-    async def bumpfee(self, tx, new_fee_rate, from_coins=None, decrease_payment=False, password=None, unsigned=False, wallet: Abstract_Wallet = None):
-        """
-        Bump the fee for an unconfirmed transaction.
-        'tx' can be either a raw hex tx or a txid. If txid, the corresponding tx must already be part of the wallet history.
-
-        arg:str:tx:Serialized transaction (hexadecimal)
-        arg:str:new_fee_rate: The Updated/Increased Transaction fee rate (in sats/vbyte)
-        arg:bool:decrease_payment:Whether payment amount will be decreased (true/false)
-        arg:bool:unsigned:Do not sign transaction
-        arg:json:from_coins:Coins that may be used to inncrease the fee (must be in wallet)
-        """
+    async def _get_tx_for_replacement(self, tx: str, wallet: Abstract_Wallet) -> Transaction:
+        """Returns the transaction given as a txid (must be in the wallet history) or as raw hex,
+        with info from the wallet and the network added."""
         if is_hash256_str(tx):  # txid
             tx = wallet.db.get_transaction(tx)
             if tx is None:
@@ -1086,17 +1076,52 @@ class Commands(Logger):
                 tx.deserialize()
             except transaction.SerializationError as e:
                 raise UserFacingException(f"Failed to deserialize transaction: {e}") from e
+        tx.add_info_from_wallet(wallet)
+        await tx.add_info_from_network(self.network)
+        return tx
+
+    @command('wp')
+    async def bumpfee(self, tx, new_fee_rate, from_coins=None, decrease_payment=False, password=None, unsigned=False, wallet: Abstract_Wallet = None):
+        """
+        Bump the fee for an unconfirmed transaction.
+        'tx' can be either a raw hex tx or a txid. If txid, the corresponding tx must already be part of the wallet history.
+
+        arg:str:tx:Serialized transaction (hexadecimal)
+        arg:decimal:new_fee_rate: The Updated/Increased Transaction fee rate (in sats/vbyte)
+        arg:bool:decrease_payment:Whether payment amount will be decreased (true/false)
+        arg:bool:unsigned:Do not sign transaction
+        arg:json:from_coins:Coins that may be used to inncrease the fee (must be in wallet)
+        """
+        tx = await self._get_tx_for_replacement(tx, wallet)
         domain_coins = from_coins.split(',') if from_coins else None
         coins = wallet.get_spendable_coins(None)
         if domain_coins is not None:
             coins = [coin for coin in coins if (coin.prevout.to_str() in domain_coins)]
-        tx.add_info_from_wallet(wallet)
-        await tx.add_info_from_network(self.network)
         new_tx = wallet.bump_fee(
             tx=tx,
             coins=coins,
             strategy=BumpFeeStrategy.DECREASE_PAYMENT if decrease_payment else BumpFeeStrategy.PRESERVE_PAYMENT,
             new_fee_rate=new_fee_rate)
+        if not unsigned:
+            wallet.sign_transaction(new_tx, password)
+        return new_tx.serialize()
+
+    @command('wp')
+    async def dscancel(self, tx, new_fee_rate, password=None, unsigned=False, wallet: Abstract_Wallet = None):
+        """
+        Cancel an unconfirmed transaction by double-spending its inputs back to the wallet (RBF).
+        'tx' can be either a raw hex tx or a txid; either way it must be an unconfirmed tx in the wallet history.
+
+        arg:str:tx:Serialized transaction (hexadecimal)
+        arg:decimal:new_fee_rate: The Updated/Increased Transaction fee rate (in sats/vbyte)
+        arg:bool:unsigned:Do not sign transaction
+        """
+        tx = await self._get_tx_for_replacement(tx, wallet)
+        if not wallet.get_tx_info(tx).can_dscancel:
+            raise UserFacingException(
+                "This transaction cannot be cancelled. Only unconfirmed transactions from the wallet history "
+                "that spend coins of this wallet, signal RBF and pay to an address outside of it can be cancelled.")
+        new_tx = wallet.dscancel(tx=tx, new_fee_rate=new_fee_rate)
         if not unsigned:
             wallet.sign_transaction(new_tx, password)
         return new_tx.serialize()
@@ -1131,7 +1156,7 @@ class Commands(Logger):
             fx = None
         for item in out:
             if show_addresses:
-                tx = wallet.db.get_transaction(item['txid'])
+                tx = wallet.adb.get_transaction(item['txid'])
                 item['inputs'] = list(map(lambda x: x.to_json(), tx.inputs()))
                 item['outputs'] = list(map(lambda x: {'address': x.get_ui_address_str(), 'value_sat': x.value},
                                            tx.outputs()))
@@ -1872,7 +1897,7 @@ class Commands(Logger):
                 return False
             if private and chan.is_public():
                 return False
-            if active and not chan.is_redeemed():
+            if active and chan.is_redeemed():
                 return False
             if open and not chan.is_open():
                 return False
@@ -1887,6 +1912,7 @@ class Commands(Logger):
                 'state': chan.get_state().name,
                 'peer_state': chan.peer_state.name,
                 'remote_pubkey': chan.node_id.hex(),
+                'capacity': chan.get_capacity(),
                 'local_balance': chan.balance(LOCAL)//1000,
                 'remote_balance': chan.balance(REMOTE)//1000,
                 'local_ctn': chan.get_latest_ctn(LOCAL),
@@ -2403,6 +2429,19 @@ arg_types = {
     'decimal_or_max': lambda x: str(to_decimal(x)) if not parse_max_spend(x) else x,
 }
 
+
+def _get_argparse_type(type_descriptor: Optional[str]) -> Optional[Callable[[str], Any]]:
+    convert = arg_types.get(type_descriptor)
+    if convert is None:
+        return None
+    def argparse_type(x: str):
+        try:
+            return convert(x)
+        except Exception as e:
+            raise argparse.ArgumentTypeError(f"invalid {type_descriptor} value: {x!r}") from e
+    return argparse_type
+
+
 config_variables = {
     'addrequest': {
         'ssl_privkey': 'Path to your SSL private key, needed to sign the request.',
@@ -2605,7 +2644,7 @@ def get_parser():
             action = "store_true" if default is False else 'store'
             if action == 'store':
                 type_descriptor = cmd.arg_types.get(optname)
-                _type = arg_types.get(type_descriptor, str)
+                _type = _get_argparse_type(type_descriptor) or str
                 p.add_argument('--' + optname, dest=optname, action=action, default=default, help=help, type=_type)
             else:
                 p.add_argument('--' + optname, dest=optname, action=action, default=default, help=help)
@@ -2618,7 +2657,7 @@ def get_parser():
             if not help:
                 print(f'undocumented argument {cmdname}::{param}', file=sys.stderr)
             type_descriptor = cmd.arg_types.get(param)
-            _type = arg_types.get(type_descriptor)
+            _type = _get_argparse_type(type_descriptor)
             if help is not None and _type is None:
                 print(f'unknown type \'{_type}\' for {cmdname}::{param}', file=sys.stderr)
             p.add_argument(param, help=help, type=_type)

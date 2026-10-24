@@ -33,7 +33,7 @@ from electrum_mona import constants, version
 from electrum_mona.gui.common_qt.util import draw_qr, get_font_id
 from electrum_mona.gui.qt.paytoedit import PayToEdit
 from electrum_mona.payment_identifier import PaymentIdentifierType
-from electrum_mona.plugin import hook
+from electrum_mona.plugin import hook, PluginMetadata
 from electrum_mona.i18n import _
 from electrum_mona.transaction import PartialTxOutput, Transaction
 from electrum_mona.util import NotEnoughFunds, make_dir
@@ -96,8 +96,8 @@ class Plugin(TimelockRecoveryPlugin):
         self.small_logo_bytes = self.read_file("timelock_recovery_60.png")
         self.large_logo_bytes = self.read_file("timelock_recovery_820.png")
         self.intro_text = self.read_file("intro.txt").decode('utf-8')
-        plugin_metadata: Optional[dict] = parent.get_metadata('timelock_recovery')
-        self.plugin_version: str = plugin_metadata['version'] if plugin_metadata else 'unknown'
+        plugin_metadata: Optional[PluginMetadata] = parent.get_metadata('timelock_recovery')
+        self.plugin_version: str = plugin_metadata.version if plugin_metadata else 'unknown'
 
     @hook
     def load_wallet(self, wallet, window):
@@ -237,14 +237,14 @@ class Plugin(TimelockRecoveryPlugin):
                 if not context.alert_tx or context.alert_tx.txid() != new_alert_tx.txid():
                     context.alert_tx = new_alert_tx
                     alert_changed = True
-                assert all(tx_input.is_segwit() for tx_input in context.alert_tx.inputs())
+                assert context.alert_tx.is_all_segwit()
                 alert_tx_complete_label.setText(_("✓ Signed") if context.alert_tx.is_complete() else "")
                 alert_tx_fee_label.setText(_("Fee: {}").format(self.config.format_amount_and_units(context.alert_tx.get_fee())))
                 new_recovery_tx = context.make_unsigned_recovery_tx(fee_policy)
                 if alert_changed or not context.recovery_tx or context.recovery_tx.txid() != new_recovery_tx.txid():
                     context.recovery_tx = new_recovery_tx
                     context.add_input_info_to_recovery_tx()
-                assert all(tx_input.is_segwit() for tx_input in context.recovery_tx.inputs())
+                assert context.recovery_tx.is_all_segwit()
                 recovery_tx_complete_label.setText(_("✓ Signed") if context.recovery_tx.is_complete() else "")
                 recovery_tx_fee_label.setText(_("Fee: {}").format(self.config.format_amount_and_units(context.recovery_tx.get_fee())))
                 if create_cancel_cb.isChecked():
@@ -252,7 +252,7 @@ class Plugin(TimelockRecoveryPlugin):
                     if alert_changed or not context.cancellation_tx or context.cancellation_tx.txid() != new_cancellation_tx.txid():
                         context.cancellation_tx = new_cancellation_tx
                         context.add_input_info_to_cancellation_tx()
-                    assert all(tx_input.is_segwit() for tx_input in context.cancellation_tx.inputs())
+                    assert context.cancellation_tx.is_all_segwit()
                     cancellation_tx_complete_label.setText(_("✓ Signed") if context.cancellation_tx.is_complete() else "")
                     cancellation_tx_fee_label.setText(_("Fee: {}").format(self.config.format_amount_and_units(context.cancellation_tx.get_fee())))
                 else:

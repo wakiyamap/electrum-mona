@@ -68,6 +68,7 @@ class TxEditorContext(Enum):
     """
     PAYMENT = auto()
     CHANNEL_FUNDING = auto()
+    RBF = auto()
 
 
 class TxEditor(WindowModalDialog, SubmarineSwapMixin, Logger):
@@ -187,6 +188,9 @@ class TxEditor(WindowModalDialog, SubmarineSwapMixin, Logger):
     def is_batching(self) -> bool:
         return self._base_tx is not None
 
+    def send_change_to_lightning_available(self) -> bool:
+        return self.config.WALLET_SEND_CHANGE_TO_LIGHTNING and self.context == TxEditorContext.PAYMENT
+
     def timer_actions(self):
         if self.needs_update:
             self.update()
@@ -303,12 +307,12 @@ class TxEditor(WindowModalDialog, SubmarineSwapMixin, Logger):
 
     def update_tab_visibility(self):
         """Update self.tab_widget to show all tabs that are enabled."""
-        # first remove all tabs
-        while self.tab_widget.count() > 0:
-            self.tab_widget.removeTab(0)
-
         # always show onchain payment tab
-        self.tab_widget.addTab(self.onchain_tab, _('Onchain Transaction'))
+        if self.tab_widget.indexOf(self.onchain_tab) == -1:
+            self.tab_widget.addTab(self.onchain_tab, _('Onchain Transaction'))
+
+        # will be re-added if enabled, no-op if not shown
+        self.tab_widget.removeTab(self.tab_widget.indexOf(self.submarine_payment_tab))
 
         allow_swaps = self.context == TxEditorContext.PAYMENT and self.payee_outputs and self.swap_manager
         if self.config.WALLET_ENABLE_SUBMARINE_PAYMENTS and allow_swaps:
@@ -508,24 +512,29 @@ class TxEditor(WindowModalDialog, SubmarineSwapMixin, Logger):
             self.resize_to_fit_content()
         if self.context != TxEditorContext.CHANNEL_FUNDING:
             self.pref_menu.addConfig(self.config.cv.GUI_QT_TX_EDITOR_SHOW_LOCKTIME, callback=cb)
+
         self.pref_menu.addSeparator()
+
         can_have_lightning = self.wallet.can_have_lightning()
-        send_ch_to_ln = self.pref_menu.addConfig(
-            self.config.cv.WALLET_SEND_CHANGE_TO_LIGHTNING,
-            callback=lambda: (self.prepare_swap_transport(), self.trigger_update()),  # type: ignore
-            checked=False if not can_have_lightning else None,
-        )
-        sub_payments = self.pref_menu.addConfig(
-            self.config.cv.WALLET_ENABLE_SUBMARINE_PAYMENTS,
-            callback=self.update_tab_visibility,
-            checked=False if not can_have_lightning else None,
-        )
+        ln_config_items = []
+        if self.context == TxEditorContext.PAYMENT:
+            ln_config_items.append(self.pref_menu.addConfig(
+                self.config.cv.WALLET_SEND_CHANGE_TO_LIGHTNING,
+                callback=lambda: (self.prepare_swap_transport(), self.trigger_update()),  # type: ignore
+                checked=False if not can_have_lightning else None,
+            ))
+            ln_config_items.append(self.pref_menu.addConfig(
+                self.config.cv.WALLET_ENABLE_SUBMARINE_PAYMENTS,
+                callback=self.update_tab_visibility,
+                checked=False if not can_have_lightning else None,
+            ))
         if not can_have_lightning:  # disable the buttons and override tooltip
             ln_unavailable_msg = _("Not available for this wallet.") \
                                  + "\n" + _("Requires a wallet with Lightning network support.")
-            for ln_conf in (send_ch_to_ln, sub_payments):
+            for ln_conf in ln_config_items:
                 ln_conf.setEnabled(False)
                 ln_conf.setToolTip(ln_unavailable_msg)
+
         self.pref_menu.addToggle(
             _('Use change addresses'),
             self.toggle_use_change,
@@ -538,12 +547,11 @@ class TxEditor(WindowModalDialog, SubmarineSwapMixin, Logger):
             tooltip='\n'.join([
                 _('In some cases, use up to 3 change addresses in order to break '
                   'up large coin amounts and obfuscate the recipient address.'),
-                _('This may result in higher transactions fees.')
+                _('This may result in higher transaction fees.')
             ]))
         self.use_multi_change_menu.setEnabled(self.wallet.use_change)
-        # fixme: some of these options (WALLET_SEND_CHANGE_TO_LIGHTNING, WALLET_MERGE_DUPLICATE_OUTPUTS)
-        # only make sense when we create a new tx, and should not be visible/enabled in rbf dialog
-        self.pref_menu.addConfig(self.config.cv.WALLET_MERGE_DUPLICATE_OUTPUTS, callback=self.trigger_update)
+        if self.context == TxEditorContext.PAYMENT:
+            self.pref_menu.addConfig(self.config.cv.WALLET_MERGE_DUPLICATE_OUTPUTS, callback=self.trigger_update)
         self.pref_menu.addConfig(self.config.cv.WALLET_SPEND_CONFIRMED_ONLY, callback=self.trigger_update)
         self.pref_menu.addConfig(self.config.cv.WALLET_COIN_CHOOSER_OUTPUT_ROUNDING, callback=self.trigger_update)
         self.pref_button = QToolButton()
@@ -598,7 +606,7 @@ class TxEditor(WindowModalDialog, SubmarineSwapMixin, Logger):
             w.setVisible(b)
 
     def run(self):
-        if self.config.WALLET_SEND_CHANGE_TO_LIGHTNING:
+        if self.send_change_to_lightning_available():
             # if disabled but submarine payments are enabled we only connect once the other tab gets opened
             self.prepare_swap_transport()
         cancelled = not self.exec()
@@ -646,7 +654,7 @@ class TxEditor(WindowModalDialog, SubmarineSwapMixin, Logger):
             self.fee_label.setText(self.main_window.config.format_amount_and_units(self.tx.get_fee()))
             self._update_extra_fees()
 
-        if self.config.WALLET_SEND_CHANGE_TO_LIGHTNING:
+        if self.send_change_to_lightning_available():
             self.change_to_ln_swap_providers_button.setVisible(True)
             self.change_to_ln_swap_providers_button.fetching = \
                 bool(self.swap_transport and self.swap_transport.ongoing_connection_attempt)
@@ -674,10 +682,12 @@ class TxEditor(WindowModalDialog, SubmarineSwapMixin, Logger):
                 messages.append(long_warning)
         if self.no_dynfee_estimates:
             self.error = _('Fee estimates not available. Please set a fixed fee or feerate.')
-        if self.config.WALLET_SEND_CHANGE_TO_LIGHTNING:
+        if self.send_change_to_lightning_available():
             if not self.swap_manager:
-                messages.append(_("Lightning is not enabled."))
-            elif swap_msg := self.swap_manager.get_message_for_swap_change(self.swap_transport, self.tx):
+                swap_msg = _("Change stays on-chain (Lightning not enabled).") if self.tx.has_change() else ""
+            else:
+                swap_msg = self.swap_manager.get_message_for_swap_change(self.swap_transport, self.tx)
+            if swap_msg:
                 messages.append(swap_msg)
         # warn if spending unconf
         if any((txin.block_height is not None and txin.block_height<=0) for txin in self.tx.inputs()):

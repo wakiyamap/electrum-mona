@@ -703,7 +703,8 @@ class SimpleConfig(Logger):
     WALLET_SEND_CHANGE_TO_LIGHTNING = ConfigVar(
         'send_change_to_lightning', default=False, type_=bool,
         short_desc=lambda: _('Send change to Lightning'),
-        long_desc=lambda: _('If possible, send the change of this transaction to your channels, with a submarine swap'),
+        long_desc=lambda: _('When possible, send transaction change to your Lightning balance using a swap. '
+                            'Swap fees apply. Otherwise, change stays on-chain.'),
     )
     WALLET_ENABLE_SUBMARINE_PAYMENTS = ConfigVar(
         'enable_submarine_payments', default=False, type_=bool,
@@ -901,7 +902,7 @@ Warning: setting this to too low will result in lots of payment failures."""),
         'video_device', default='default', type_=str,
         short_desc=lambda: _('Video Device'),
         long_desc=lambda: (_("For scanning QR codes.") + "\n" +
-                           _("Install the zbar package to enable this.")),
+                           _("QR scanning requires Qt Multimedia and zxing-cpp.")),
     )
     OPENALIAS_ID = ConfigVar(
         'alias', default="", type_=str,

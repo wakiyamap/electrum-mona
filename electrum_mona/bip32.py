@@ -348,14 +348,16 @@ def convert_bip32_strpath_to_intpath(n: str) -> List[int]:
         if x.startswith('-'):
             if prime:
                 raise ValueError(f"bip32 path child index is signalling hardened level in multiple ways")
+            x = x[1:]
             prime = BIP32_PRIME
-        try:
-            x_int = int(x)
-        except ValueError as e:
-            raise ValueError(f"failed to parse bip32 path: {(str(e))}") from None
-        child_index = abs(x_int) | prime
-        if child_index > UINT32_MAX:
-            raise ValueError(f"bip32 path child index too large: {child_index} > {UINT32_MAX}")
+        if not (x.isascii() and x.isdecimal()):
+            raise ValueError(f"failed to parse bip32 path: invalid child index: {x!r}")
+        x_int = int(x)
+        if x_int >= BIP32_PRIME:
+            # the top bit is the hardened flag; a literal index >= 2**31 would either
+            # silently become hardened or make the explicit hardened marker a no-op
+            raise ValueError(f"bip32 path child index too large: {x_int} >= {BIP32_PRIME}.")
+        child_index = x_int | prime
         path.append(child_index)
     return path
 

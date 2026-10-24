@@ -207,7 +207,7 @@ def _extend_trampoline_route(
     # note: trampoline nodes are supposed to advertise their fee and cltv in node_update message.
     #       However, in the temporary spec, they do not.
     #       They also don't send their fee policy in the error message if we lowball the fee...
-    fee_base, fee_proportional, cltv_delta = fee_info if fee_info else (PLACEHOLDER_FEE, PLACEHOLDER_FEE, 960)
+    fee_base, fee_proportional, cltv_delta = fee_info if fee_info else (PLACEHOLDER_FEE, PLACEHOLDER_FEE, 3840)  # monacoin: 576 * (144/960) blocks
     route.append(
         TrampolineEdge(
             start_node=start_node,
@@ -373,6 +373,7 @@ def create_trampoline_route(
         budget=budget,
         amount_msat_for_dest=amount_msat,
         cltv_delta_for_dest=min_final_cltv_delta,
+        we_are_forwarding=False,
     ):
         raise FeeBudgetExceeded(f"route exceeds budget: budget: {budget}")
     return route
