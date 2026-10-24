@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 export HOME=~
 set -eux pipefail
-mkdir -p ~/.monacoin
-cat > ~/.monacoin/monacoin.conf <<EOF
+mkdir -p ~/.bitcoin
+cat > ~/.bitcoin/bitcoin.conf <<EOF
 regtest=1
 txindex=1
+txospenderindex=1
 printtoconsole=1
 rpcuser=doggman
 rpcpassword=donkey
@@ -14,12 +15,12 @@ zmqpubrawtx=tcp://127.0.0.1:28333
 fallbackfee=0.0002
 [regtest]
 rpcbind=0.0.0.0
-rpcport=19443
+rpcport=18554
 EOF
-rm -rf ~/.monacoin/regtest
-monacoind -regtest &
+rm -rf ~/.bitcoin/regtest
+bitcoind -regtest &
 sleep 6
-# monacoin-cli createwallet test_wallet
-addr=$(monacoin-cli getnewaddress)
-monacoin-cli generatetoaddress 150 $addr
-tail -f ~/.monacoin/regtest/debug.log
+bitcoin-cli createwallet test_wallet
+addr=$(bitcoin-cli getnewaddress)
+bitcoin-cli generatetoaddress 150 $addr
+tail -f ~/.bitcoin/regtest/debug.log

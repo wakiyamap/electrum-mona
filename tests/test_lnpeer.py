@@ -20,37 +20,37 @@ from aiorpcx import timeout_after, TaskTimeout
 from electrum_ecc import ECPrivkey
 import electrum_ecc as ecc
 
-import electrum_mona
-import electrum_mona.trampoline
-from electrum_mona import bitcoin
-from electrum_mona import util
-from electrum_mona import constants
-from electrum_mona import bip32
-from electrum_mona.network import Network, ProxySettings
-from electrum_mona import simple_config, lnutil
-from electrum_mona.bolt11 import encode_bolt11_invoice, BOLT11Addr
-from electrum_mona.bitcoin import sha256
-from electrum_mona.transaction import Transaction
-from electrum_mona.util import NetworkRetryManager, bfh, OldTaskGroup, EventListener, InvoiceError
-from electrum_mona.lnpeer import Peer
-from electrum_mona.lnpeer import CoopCloseFailure
-from electrum_mona.lntransport import LNPeerAddr
-from electrum_mona.crypto import privkey_to_pubkey
-from electrum_mona.lnutil import Keypair, PaymentFailure, LnFeatures, HTLCOwner, PaymentFeeBudget, RECEIVED
-from electrum_mona.lnchannel import ChannelState, PeerState, Channel
-from electrum_mona.lnrouter import LNPathFinder, PathEdge, LNPathInconsistent
-from electrum_mona.channel_db import ChannelDB, InvalidGossipMsg
-from electrum_mona.lnworker import LNWallet, NoPathFound, SentHtlcInfo, PaySession, LNPeerManager
-from electrum_mona.lnmsg import encode_msg, decode_msg
-from electrum_mona import lnmsg
-from electrum_mona.logging import console_stderr_handler, Logger
-from electrum_mona.lnonion import OnionFailureCode, OnionRoutingFailure, OnionHopsDataSingle, OnionPacket, OnionParsingError
-from electrum_mona.lnutil import LOCAL, REMOTE, UpdateAddHtlc, RecvMPPResolution, RevocationStore
-from electrum_mona.invoices import PR_PAID, PR_UNPAID, PR_INFLIGHT, Invoice, PR_FAILED
-from electrum_mona.interface import GracefulDisconnect
-from electrum_mona.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
-from electrum_mona.mpp_split import split_amount_normal
-from electrum_mona.wallet import Abstract_Wallet, Standard_Wallet
+import electrum
+import electrum.trampoline
+from electrum import bitcoin
+from electrum import util
+from electrum import constants
+from electrum import bip32
+from electrum.network import Network, ProxySettings
+from electrum import simple_config, lnutil
+from electrum.bolt11 import encode_bolt11_invoice, BOLT11Addr
+from electrum.bitcoin import sha256
+from electrum.transaction import Transaction
+from electrum.util import NetworkRetryManager, bfh, OldTaskGroup, EventListener, InvoiceError
+from electrum.lnpeer import Peer
+from electrum.lnpeer import CoopCloseFailure
+from electrum.lntransport import LNPeerAddr
+from electrum.crypto import privkey_to_pubkey
+from electrum.lnutil import Keypair, PaymentFailure, LnFeatures, HTLCOwner, PaymentFeeBudget, RECEIVED
+from electrum.lnchannel import ChannelState, PeerState, Channel, CF_ANNOUNCE_CHANNEL
+from electrum.lnrouter import LNPathFinder, PathEdge, LNPathInconsistent
+from electrum.channel_db import ChannelDB, InvalidGossipMsg
+from electrum.lnworker import LNWallet, NoPathFound, SentHtlcInfo, PaySession, LNPeerManager
+from electrum.lnmsg import encode_msg, decode_msg
+from electrum import lnmsg
+from electrum.logging import console_stderr_handler, Logger
+from electrum.lnonion import OnionFailureCode, OnionRoutingFailure, OnionHopsDataSingle, OnionPacket, OnionParsingError
+from electrum.lnutil import LOCAL, REMOTE, UpdateAddHtlc, RecvMPPResolution, RevocationStore
+from electrum.invoices import PR_PAID, PR_UNPAID, PR_INFLIGHT, Invoice, PR_FAILED
+from electrum.interface import GracefulDisconnect
+from electrum.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
+from electrum.mpp_split import split_amount_normal
+from electrum.wallet import Abstract_Wallet, Standard_Wallet
 
 from .test_bitcoin import needs_test_with_all_chacha20_implementations
 from . import ElectrumTestCase, restore_wallet_from_text__for_unittest, lnhelpers
@@ -119,7 +119,7 @@ def send_trampoline_htlc_to_forward(
     outer_payment_secret: bytes,
     htlc_amount_msat: int,
     amt_to_forward: int,
-    inner_cltv_delta: int = 960,
+    inner_cltv_delta: int = 144,
     outgoing_node_id: bytes = None,
 ) -> UpdateAddHtlc:
     """Sends an htlc from w1 to w2 whose outer onion is a final hop to w2, claiming
@@ -129,7 +129,7 @@ def send_trampoline_htlc_to_forward(
     note: nothing constrains the outer onion's total_msat here. w2 is not the final
     recipient, so he has no invoice to validate such an htlc against.
     """
-    cltv_abs = w1.network.get_local_height() + 3000
+    cltv_abs = w1.network.get_local_height() + 500
     next_node_id = outgoing_node_id or privkey_to_pubkey(os.urandom(32))
     trampoline_hops_data = [
         OnionHopsDataSingle(payload={
@@ -143,7 +143,7 @@ def send_trampoline_htlc_to_forward(
             "payment_data": {"payment_secret": os.urandom(32), "total_msat": amt_to_forward},
         }),
     ]
-    trampoline_onion = electrum_mona.lnonion.new_onion_packet(
+    trampoline_onion = electrum.lnonion.new_onion_packet(
         [w2.node_keypair.pubkey, next_node_id],
         os.urandom(32),
         trampoline_hops_data,
@@ -156,7 +156,7 @@ def send_trampoline_htlc_to_forward(
         "payment_data": {"payment_secret": outer_payment_secret, "total_msat": htlc_amount_msat},
         "trampoline_onion_packet": {"trampoline_onion_packet": trampoline_onion.to_bytes()},
     })]
-    onion = electrum_mona.lnonion.new_onion_packet(
+    onion = electrum.lnonion.new_onion_packet(
         [w2.node_keypair.pubkey], os.urandom(32), hops_data, associated_data=payment_hash)
     return p1.send_htlc(
         chan=chan,
@@ -180,7 +180,7 @@ class TestPeer(ElectrumTestCase):
         self.GRAPH_DEFINITIONS = copy.deepcopy(lnhelpers._GRAPH_DEFINITIONS)
 
     async def asyncTearDown(self):
-        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
+        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
         await super().asyncTearDown()
 
     prepare_invoice = staticmethod(lnhelpers.prepare_invoice)
@@ -647,7 +647,7 @@ class TestPeerDirect(TestPeer):
         if test_trampoline:
             await self._activate_trampoline(w1)
             # declare bob as trampoline node
-            electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+            electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                 'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
             }
 
@@ -719,7 +719,7 @@ class TestPeerDirect(TestPeer):
             with self.assertRaises(lnutil.UnknownEvenFeatureBits):
                 result, log = await w1.pay_invoice(pay_req)
             # feature bits: not all transitive dependencies are set
-            invoice_features = LnFeatures((1 << 8) + (1 << 17))
+            invoice_features = LnFeatures((1 << 14) + (1 << 17))
             lnaddr, pay_req = self.prepare_invoice(w2, invoice_features=invoice_features)
             with self.assertRaises(lnutil.IncompatibleOrInsaneFeatures):
                 result, log = await w1.pay_invoice(pay_req)
@@ -753,23 +753,23 @@ class TestPeerDirect(TestPeer):
 
             async def try_pay_with_too_low_final_cltv_delta(lnaddr, w1=w1, w2=w2):
                 self.assertEqual(PR_UNPAID, w2.get_payment_status(lnaddr.paymenthash, direction=RECEIVED))
-                assert lnaddr.get_min_final_cltv_delta() == 2000  # what the receiver expects
-                lnaddr.tags = [tag for tag in lnaddr.tags if tag[0] != 'c'] + [['c', 960]]
+                assert lnaddr.get_min_final_cltv_delta() == 400  # what the receiver expects
+                lnaddr.tags = [tag for tag in lnaddr.tags if tag[0] != 'c'] + [['c', 144]]
                 b11 = encode_bolt11_invoice(lnaddr, w2.node_keypair.privkey)
                 pay_req = Invoice.from_bech32(b11)
-                assert pay_req._lnaddr.get_min_final_cltv_delta() == 960  # what w1 will use to pay
+                assert pay_req._lnaddr.get_min_final_cltv_delta() == 144  # what w1 will use to pay
                 result, log = await w1.pay_invoice(pay_req)
                 if not result:
                     raise PaymentFailure()
                 raise PaymentDone()
 
             # create invoice with high min final cltv delta
-            lnaddr, _pay_req = self.prepare_invoice(w2, min_final_cltv_delta=2000)
+            lnaddr, _pay_req = self.prepare_invoice(w2, min_final_cltv_delta=400)
 
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -813,7 +813,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -844,7 +844,7 @@ class TestPeerDirect(TestPeer):
                 await self._activate_trampoline(w1)
                 await self._activate_trampoline(w2)
                 # declare bob as trampoline node
-                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -896,7 +896,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -1273,7 +1273,7 @@ class TestPeerDirect(TestPeer):
             await util.wait_for2(p1.initialized, 1)
             await util.wait_for2(p2.initialized, 1)
             w2.features |= LnFeatures.BASIC_MPP_OPT
-            lnaddr1, _pay_req = self.prepare_invoice(w2, amount_msat=10_000, min_final_cltv_delta=960)
+            lnaddr1, _pay_req = self.prepare_invoice(w2, amount_msat=10_000, min_final_cltv_delta=144)
             self.assertTrue(lnaddr1.get_features().supports(LnFeatures.BASIC_MPP_OPT))
             route = (await w1.create_routes_from_invoice(amount_msat=10_000, decoded_invoice=lnaddr1))[0][0].route
 
@@ -1285,7 +1285,7 @@ class TestPeerDirect(TestPeer):
                 total_msat=lnaddr1.get_amount_msat(),
                 payment_hash=lnaddr1.paymenthash,
                 # this htlc is valid and will get accepted, but it shouldn't get settled
-                min_final_cltv_delta=2000,
+                min_final_cltv_delta=400,
                 payment_secret=lnaddr1.payment_secret,
             )
             await asyncio.sleep(0.1)
@@ -1296,7 +1296,7 @@ class TestPeerDirect(TestPeer):
                 amount_msat=9_999,
                 total_msat=lnaddr1.get_amount_msat(),
                 payment_hash=lnaddr1.paymenthash,
-                # this htlc will get failed directly as the cltv is too close to expiry (< 960)
+                # this htlc will get failed directly as the cltv is too close to expiry (< 144)
                 min_final_cltv_delta=1,
                 payment_secret=lnaddr1.payment_secret,
             )
@@ -1411,6 +1411,74 @@ class TestPeerDirect(TestPeer):
                 await f()
 
 
+    async def test_trampoline_forward_budget_must_cover_our_cltv_delta(self):
+        # this test is about forwarding. It is in TestPeerDirect because it only requires 2 peers.
+        """The cltv budget of a trampoline forward must also cover the cltv_delta of our own
+        outgoing channel. Otherwise the outgoing htlc may expire together with the incoming one,
+        and we would have no time to claim the incoming htlc after learning the preimage.
+        """
+        graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['single_chan'])
+        p1, p2 = graph.peers.values()
+        w1, w2 = graph.workers.values()
+        alice_channel = graph.channels[('alice', 'bob')][0]
+        w2.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS = True
+        w2.config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS = True
+
+        forwarded_htlcs = []
+        orig_pay = p2.pay
+        def pay(**kwargs):
+            htlc = orig_pay(**kwargs)
+            forwarded_htlcs.append(htlc)
+            return htlc
+        p2.pay = pay
+
+        async def run():
+            await util.wait_for2(p1.initialized, 1)
+            await util.wait_for2(p2.initialized, 1)
+            # Bob is asked to relay to Alice, so that he uses his direct channel with her.
+            # The fee budget (1000 msat) covers his fee, so only the cltv budget varies.
+            with self.subTest(msg="cltv budget below our cltv_delta"):
+                send_trampoline_htlc_to_forward(
+                    p1=p1, w1=w1, w2=w2, chan=alice_channel,
+                    payment_hash=os.urandom(32),
+                    outer_payment_secret=os.urandom(32),
+                    htlc_amount_msat=2000,
+                    amt_to_forward=1000,
+                    inner_cltv_delta=143,
+                    outgoing_node_id=w1.node_keypair.pubkey,
+                )
+                await self.wait_until(lambda: htlc_tracker.num_failed == 1)
+                self.assertEqual([], forwarded_htlcs)
+
+            with self.subTest(msg="cltv budget covers our cltv_delta"):
+                incoming_htlc = send_trampoline_htlc_to_forward(
+                    p1=p1, w1=w1, w2=w2, chan=alice_channel,
+                    payment_hash=os.urandom(32),
+                    outer_payment_secret=os.urandom(32),
+                    htlc_amount_msat=2000,
+                    amt_to_forward=1000,
+                    inner_cltv_delta=144,
+                    outgoing_node_id=w1.node_keypair.pubkey,
+                )
+                await self.wait_until(lambda: forwarded_htlcs)
+                # 144 minus one block, because _maybe_forward_trampoline skews the height towards the past
+                self.assertEqual(143, incoming_htlc.cltv_abs - forwarded_htlcs[0].cltv_abs)
+
+            raise SuccessfulTest()
+
+        async def f():
+            async with OldTaskGroup() as group:
+                await group.spawn(p1._message_loop())
+                await group.spawn(p1.htlc_switch())
+                await group.spawn(p2._message_loop())
+                await group.spawn(p2.htlc_switch())
+                await asyncio.sleep(0.01)
+                await group.spawn(run())
+
+        htlc_tracker = SenderHtlcResolvedTracker.register()
+        with self.assertRaises(SuccessfulTest):
+            await f()
+
     async def test_refuse_to_forward_htlc_that_corresponds_to_payreq_we_created(self):
         """Alice holds an invoice created by Bob, hence she knows RHASH and Bob's payment_secret.
         She sends Bob a dust htlc whose outer onion is addressed to Bob (using the invoice's
@@ -1506,7 +1574,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(alice_wallet)
                 # declare bob as trampoline node
-                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_wallet.node_keypair.pubkey),
                 }
 
@@ -1520,7 +1588,7 @@ class TestPeerDirect(TestPeer):
                     amount_msat=lnaddr1.get_amount_msat() // 4,
                     total_msat=lnaddr1.get_amount_msat(),
                     payment_hash=lnaddr1.paymenthash,
-                    min_final_cltv_delta=2000,
+                    min_final_cltv_delta=400,
                     payment_secret=lnaddr1.payment_secret,
                 )
                 alice_peer.pay(  # htlc 2
@@ -1529,7 +1597,7 @@ class TestPeerDirect(TestPeer):
                     amount_msat=lnaddr1.get_amount_msat() // 4,
                     total_msat=lnaddr1.get_amount_msat(),
                     payment_hash=lnaddr1.paymenthash,
-                    min_final_cltv_delta=2000,
+                    min_final_cltv_delta=400,
                     payment_secret=lnaddr1.payment_secret,
                 )
                 await asyncio.sleep(bob_wallet.MPP_EXPIRY // 2)  # give bob time to receive the htlc
@@ -1585,7 +1653,7 @@ class TestPeerDirect(TestPeer):
                 self.assertIsNone(coop_fail)
                 self.assertEqual((chan_ab._state, chan_ba._state), (ChannelState.CLOSING, ChannelState.CLOSING))
 
-    @mock.patch('electrum_mona.lnpeer.LN_P2P_NETWORK_TIMEOUT', 0.05)
+    @mock.patch('electrum.lnpeer.LN_P2P_NETWORK_TIMEOUT', 0.05)
     async def test_modern_shutdown_no_overlap(self):
         for alice_closes in [True, False]:
             with self.subTest(alice_closes=alice_closes):
@@ -1660,6 +1728,25 @@ class TestPeerDirect(TestPeer):
             coop_close_failure = e
 
         return alice_channel, bob_channel, coop_close_failure
+
+    async def test_shutdown_with_pending_update_fee(self):
+        graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['single_chan'])
+        p1, p2 = graph.peers.values()
+        w1, w2 = graph.workers.values()
+        w1.network.config.TEST_SHUTDOWN_FEE = w2.network.config.TEST_SHUTDOWN_FEE = 1000
+        alice_channel = graph.channels[('alice', 'bob')][0]
+        async def close():
+            await util.wait_for2(p1.initialized, 1)
+            await util.wait_for2(p2.initialized, 1)
+            # update_fee without commitment_signed
+            feerate = alice_channel.get_latest_feerate(LOCAL) + 1
+            alice_channel.update_fee(feerate, True)
+            p1.send_message("update_fee", channel_id=alice_channel.channel_id, feerate_per_kw=feerate)
+            await util.wait_for2(p1.close_channel(alice_channel.channel_id), 5)
+            raise SuccessfulTest()
+        gath = asyncio.gather(close(), p1._message_loop(), p2._message_loop(), p1.htlc_switch(), p2.htlc_switch())
+        with self.assertRaises(SuccessfulTest):
+            await gath
 
     async def test_warning(self):
         graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['single_chan'])
@@ -1917,7 +2004,7 @@ class TestPeerDirect(TestPeer):
             alice_p, bob_p = graph.peers.values()
             alice_w, bob_w = graph.workers.values()
 
-            lnaddr, pay_req = self.prepare_invoice(bob_w, min_final_cltv_delta=1000)
+            lnaddr, pay_req = self.prepare_invoice(bob_w, min_final_cltv_delta=150)
             del bob_w._preimages[pay_req.rhash]  # del preimage so bob doesn't settle
             payment_key = bob_w._get_payment_key(lnaddr.paymenthash).hex()
 
@@ -1949,7 +2036,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(alice_w)
                 # declare bob as trampoline node
-                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_w.node_keypair.pubkey),
                 }
 
@@ -1983,7 +2070,7 @@ class TestPeerDirect(TestPeer):
         alice_p, bob_p, alice_w, bob_w = self.prepare_peers(alice_channel, bob_channel)
 
         await self._activate_trampoline(alice_w)
-        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_w.node_keypair.pubkey),
         }
 
@@ -2053,12 +2140,12 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
             preimage = os.urandom(32)
-            lnaddr, pay_req = self.prepare_invoice(w2, payment_preimage=preimage, min_final_cltv_delta=960)
+            lnaddr, pay_req = self.prepare_invoice(w2, payment_preimage=preimage, min_final_cltv_delta=144)
 
             # delete preimage, this would fail the htlcs if payment_hash wasn't in dont_expire_htlcs
             del w2._preimages[pay_req.rhash]
@@ -2085,13 +2172,13 @@ class TestPeerDirect(TestPeer):
                 await asyncio.sleep(0.25)  # give w2 some time to do mistakes
                 self.assertEqual(w2.received_mpp_htlcs[payment_key.hex()].resolution, RecvMPPResolution.COMPLETE)
                 if test_expiry:
-                    # we set an expiry delta of 20 blocks before expiry, htlc expiry should be +960 current height
+                    # we set an expiry delta of 20 blocks before expiry, htlc expiry should be +144 current height
                     # so adding some blocks should get the htlcs failed
                     w2.network.blockchain()._height += 50
                     await asyncio.sleep(0.1)
-                    # the htlcs should not get failed yet as 960-50 > 20
+                    # the htlcs should not get failed yet as 144-50 > 20
                     self.assertEqual(w2.received_mpp_htlcs[payment_key.hex()].resolution, RecvMPPResolution.COMPLETE)
-                    w2.network.blockchain()._height += 891
+                    w2.network.blockchain()._height += 75
                     return  # the htlcs should get failed and pay should return PaymentFailure
 
                 # saving the preimage should let the htlcs get fulfilled
@@ -2142,7 +2229,7 @@ class TestPeerForwarding(TestPeer):
 
         async def pay(lnaddr, pay_req):
             self.assertEqual(PR_UNPAID, graph.workers['alice'].get_payment_status(lnaddr.paymenthash, direction=RECEIVED))
-            with mock.patch('electrum_mona.mpp_split.split_amount_normal',
+            with mock.patch('electrum.mpp_split.split_amount_normal',
                                 side_effect=mocked_split_amount_normal):
                 result, log = await graph.workers['bob'].pay_invoice(pay_req)
             self.assertTrue(result)
@@ -2497,16 +2584,17 @@ class TestPeerForwarding(TestPeer):
 
     async def test_payment_multipart_trampoline_e2e(self):
         graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['square_graph'])
-        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             graph.workers['bob'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['bob'].node_keypair.pubkey),
             graph.workers['carol'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['carol'].node_keypair.pubkey),
         }
+        graph.workers['alice'].config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # set high so the first attempt would succeed
         with self.assertRaises(PaymentDone):
             await self._run_mpp(graph,{'alice_uses_trampoline': True, 'attempts': 1})
 
     async def test_payment_multipart_trampoline_legacy(self):
         graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['square_graph'])
-        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             graph.workers['bob'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['bob'].node_keypair.pubkey),
             graph.workers['carol'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['carol'].node_keypair.pubkey),
         }
@@ -2604,12 +2692,12 @@ class TestPeerForwarding(TestPeer):
         peers = graph.peers.values()
 
         # declare routing nodes as trampoline nodes
-        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
+        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
         for name in trampoline_forwarders:
             user_w = graph.workers[name]
             user_w.config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS = True
             peer_addr = LNPeerAddr(host="127.0.0.1", port=9735, pubkey=user_w.node_keypair.pubkey)
-            electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS[user_w.name] = peer_addr
+            electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS[user_w.name] = peer_addr
 
         for user in trampoline_users:
             user_w = graph.workers[user]
@@ -2686,6 +2774,7 @@ class TestPeerForwarding(TestPeer):
     async def test_payment_trampoline_e2e_alice_t1_dave(self):
         with self.assertRaises(PaymentDone):
             graph = self.create_square_graph(direct=True, is_legacy=False)
+            graph.workers['alice'].config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # set high so the first attempt would succeed
             await self._run_trampoline_payment(graph)
 
     async def test_payment_trampoline_e2e_alice_t1_t2_dave(self):
@@ -2720,26 +2809,85 @@ class TestPeerForwarding(TestPeer):
                 attempts=2,
             )
 
-    async def test_payment_trampoline_e2e_lazy(self):
+    async def _test_lazy_trampoline(self, is_legacy):
         # alice -> T1_bob -> T2_carol -> T3_dave -> edward
+        # Bob is the lazy trampoline (no gossip)
         graph_definition = self.GRAPH_DEFINITIONS['line_graph']
+        workers = self.prepare_lnwallets(graph_definition)
+        # carol does not advertise trampoline, so bob does not hint her in subtest 1.
+        # subtests 2 and 3 rely on the hardcoded list, where she is added as forwarder.
+        workers['carol'].features &= ~LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT_ELECTRUM
+        graph = self.prepare_chans_and_peers_in_graph(graph_definition, workers=workers)
+        graph.workers['alice'].config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # so that one attempt is enough
+        if is_legacy:
+            graph.workers['edward'].features = graph.workers['edward'].features ^ LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT_ELECTRUM
+
+        # bob must not send back to alice: make channel private
+        bob_alice_channel = graph.channels[('bob', 'alice')][0]
+        self.assertTrue(bob_alice_channel.is_public())
+        bob_alice_channel.constraints.flags = bob_alice_channel.constraints.flags ^ CF_ANNOUNCE_CHANNEL
+        self.assertFalse(bob_alice_channel.is_public())
+
+        with self.subTest(msg="carol is not a trampoline: two attempts fail"):
+            with self.assertRaises(NoPathFound):
+                await self._run_trampoline_payment(
+                    graph, sender_name='alice',
+                    destination_name='edward',
+                    trampoline_forwarders=('bob', 'dave'),
+                    trampoline_users=('alice', 'bob'),
+                    attempts=2,
+                )
+        with self.subTest(msg="carol is a trampoline: one attempt fails"):
+            with self.assertRaises(NoPathFound):
+                await self._run_trampoline_payment(
+                    graph, sender_name='alice',
+                    destination_name='edward',
+                    trampoline_forwarders=('bob', 'carol', 'dave'),
+                    trampoline_users=('alice', 'bob'),
+                    attempts=1,
+                )
+        with self.subTest(msg="carol is a trampoline: two attempts succeed"):
+            with self.assertRaises(PaymentDone):
+                await self._run_trampoline_payment(
+                    graph, sender_name='alice',
+                    destination_name='edward',
+                    trampoline_forwarders=('bob', 'carol', 'dave'),
+                    trampoline_users=('alice', 'bob'),
+                    attempts=2,
+                )
+        with self.subTest(msg="carol is not a trampoline: bob forwards to her directly"):
+            with self.assertRaises(PaymentDone):
+                await self._run_trampoline_payment(
+                    graph, sender_name='alice',
+                    destination_name='carol',
+                    trampoline_forwarders=('bob', 'dave'),
+                    trampoline_users=('alice', 'bob'),
+                    attempts=1,
+                )
+
+    async def test_lazy_trampoline_e2e(self):
+        await self._test_lazy_trampoline(is_legacy=False)
+
+    async def test_lazy_trampoline_legacy(self):
+        await self._test_lazy_trampoline(is_legacy=True)
+
+    async def test_trampoline_forward_mpp_over_private_direct_channels(self):
+        # alice -> T1_bob -> carol
+        # bob has two private channels with carol, none of them can carry the payment alone
+        graph_definition = self.GRAPH_DEFINITIONS['line_graph']
+        small_channel = low_fee_channel.copy()
+        small_channel['local_balance_msat'] = int(100_000_000 * 0.75)
+        graph_definition['bob']['channels']['carol'] = [small_channel, small_channel.copy()]
+        del graph_definition['carol']['channels']['dave']  # else carol's invoice would only hint dave
         graph = self.prepare_chans_and_peers_in_graph(graph_definition)
-        with self.assertRaises(NoPathFound):
-            await self._run_trampoline_payment(
-                graph, sender_name='alice',
-                destination_name='edward',
-                trampoline_forwarders=('bob', 'dave'),
-                trampoline_users=('alice', 'bob'),
-                attempts=3, # fails with only 2
-            )
+        for chan in graph.channels[('bob', 'carol')]:
+            chan.constraints.flags &= ~CF_ANNOUNCE_CHANNEL
+        graph.workers['carol'].features |= LnFeatures.BASIC_MPP_OPT
+        graph.workers['alice'].config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # so that one attempt is enough
         with self.assertRaises(PaymentDone):
             await self._run_trampoline_payment(
-                graph, sender_name='alice',
-                destination_name='edward',
-                trampoline_forwarders=('bob', 'carol', 'dave'),
-                trampoline_users=('alice', 'bob'),
-                attempts=3, # fails with only 2
-            )
+                graph, destination_name='carol', trampoline_forwarders=('bob',), attempts=1)
+
 
     async def test_multi_trampoline_payment(self):
         """
@@ -2751,6 +2899,7 @@ class TestPeerForwarding(TestPeer):
         # payment amount is 100_000_000 msat, size the channels so that alice must use both to succeed
         graph_definition['alice']['channels']['bob'][0]['local_balance_msat'] = int(100_000_000 * 0.75)
         graph_definition['alice']['channels']['carol'][0]['local_balance_msat'] = int(100_000_000 * 0.75)
+        graph_definition['bob']['channels']['dave'] = [low_fee_channel]
         g = self.prepare_chans_and_peers_in_graph(graph_definition)
         w = g.workers['alice'], g.workers['carol'], g.workers['bob'], g.workers['dave']
         alice_w, carol_w, bob_w, dave_w = w
@@ -2791,14 +2940,14 @@ class TestPeerForwarding(TestPeer):
             new_payload['amt_to_forward'] = amt_to_forward
             modified_hops_data[0] = dataclasses.replace(modified_hops_data[0], payload=new_payload)
             self.logger.debug(f"{modified_hops_data=}\nsent_{hops_data=}")
-            modified_trampoline_onion = electrum_mona.lnonion.new_onion_packet(
+            modified_trampoline_onion = electrum.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 modified_hops_data,
                 **kwargs
             )
             # return the unmodified onion
-            return electrum_mona.lnonion.new_onion_packet(
+            return electrum.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 hops_data,
@@ -2819,7 +2968,7 @@ class TestPeerForwarding(TestPeer):
                 }
                 hops_data[0] = dataclasses.replace(hops_data[0], payload=MappingProxyType(new_payload))
                 modified_trampoline_onion = None
-            return electrum_mona.lnonion.new_onion_packet(
+            return electrum.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 hops_data,
@@ -2830,8 +2979,8 @@ class TestPeerForwarding(TestPeer):
         alice = graph.workers['alice']
         alice.config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # set high so the first attempt would succeed
         with self.assertRaises(PaymentFailure):
-            with mock.patch('electrum_mona.trampoline.new_onion_packet', side_effect=modified_new_onion_packet_trampoline), \
-                    mock.patch('electrum_mona.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
+            with mock.patch('electrum.trampoline.new_onion_packet', side_effect=modified_new_onion_packet_trampoline), \
+                    mock.patch('electrum.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
                         await self._run_trampoline_payment(graph, attempts=1)
         bob_alice_channel = graph.channels[('bob', 'alice')][0]
         bob_hm = bob_alice_channel.hm
@@ -2853,13 +3002,13 @@ class TestPeerForwarding(TestPeer):
                 payment_data['total_msat'] *= 2  # bob should expect double the amount she actually receives
                 payload['payment_data'] = payment_data
                 hops_data[-1] = dataclasses.replace(hops_data[-1], payload=payload)
-            return electrum_mona.lnonion.new_onion_packet(payment_path_pubkeys, session_key, hops_data, **kwargs)
+            return electrum.lnonion.new_onion_packet(payment_path_pubkeys, session_key, hops_data, **kwargs)
 
         graph = self.create_square_graph(direct=False, is_legacy=True)
         alice = graph.workers['alice']
         alice.config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # set high so the payment would succeed if bob forwarded
         with self.assertLogs('electrum', level='INFO') as logs, self.assertRaises(NoPathFound):
-            with mock.patch('electrum_mona.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
+            with mock.patch('electrum.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
                 await self._run_trampoline_payment(graph, attempts=1)
         self.assertTrue(any('MPP TIMEOUT' in record.getMessage() for record in logs.records))
         bob_carol_channel = graph.channels[('bob', 'carol')][0]
@@ -2916,7 +3065,7 @@ class TestPeerForwarding(TestPeer):
             if test_trampoline:
                 # trampoline forwarder
                 graph.workers['bob'].config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS = True
-                electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     graph.workers['bob'].name: LNPeerAddr(host="127.0.0.1", port=9735, pubkey=graph.workers['bob'].node_keypair.pubkey),
                 }
                 # trampoline users

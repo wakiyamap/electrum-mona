@@ -1,7 +1,8 @@
 name: builds
 
 on:
-  # Electrum-MONA: no nightly builds (upstream runs this on a daily schedule). Run it by hand.
+  schedule:
+    - cron: '30 2 * * *'   # 02:30 UTC daily
   workflow_dispatch:
     inputs:
       target:
@@ -9,7 +10,7 @@ on:
         required: true
         default: 'all'
         type: choice
-        options: [all, windows, android, appimage, tarball, macos]
+        options: [all, windows, android, appimage, tarball]
       android_arch:
         description: 'Android architecture (when running android)'
         required: false
@@ -45,11 +46,11 @@ jobs:
           path: contrib/build-wine/.cache/win*/wine_pip_cache
           key: wine-pip-${{ hashFiles('contrib/deterministic-build/*.txt', 'contrib/build-wine/**') }}
 
-      - name: Cache Wine native lib builds (libsecp256k1, libusb, libzbar)
+      - name: Cache Wine native lib builds (libsecp256k1, libusb, zxing-cpp)
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: contrib/build-wine/.cache/win*/build
-          key: wine-build-${{ hashFiles('contrib/make_libsecp256k1.sh', 'contrib/make_libusb.sh', 'contrib/make_zbar.sh', 'contrib/build-wine/**') }}
+          key: wine-build-${{ hashFiles('contrib/make_libsecp256k1.sh', 'contrib/make_libusb.sh', 'contrib/make_zxing.sh', 'contrib/build-wine/**') }}
 
       - name: Build Windows binaries
         run: ./contrib/build-wine/build.sh
@@ -60,7 +61,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: electrum-mona-windows-${{ github.sha }}
+          name: electrum-windows-${{ github.sha }}
           path: contrib/build-wine/dist/*
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
@@ -119,7 +120,7 @@ jobs:
       - name: Upload Android APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: electrum-mona-android-${{ env.APK_ARCH }}-${{ github.sha }}
+          name: electrum-android-${{ env.APK_ARCH }}-${{ github.sha }}
           path: dist/*
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
@@ -146,7 +147,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: contrib/build-linux/appimage/.cache/appimage
-          key: appimage-build-${{ hashFiles('contrib/make_libsecp256k1.sh', 'contrib/make_zbar.sh', 'contrib/build-linux/appimage/**') }}
+          key: appimage-build-${{ hashFiles('contrib/make_libsecp256k1.sh', 'contrib/make_zxing.sh', 'contrib/build-linux/appimage/**') }}
 
       - name: Build AppImage
         run: ./contrib/build-linux/appimage/build.sh
@@ -157,7 +158,7 @@ jobs:
       - name: Upload AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: electrum-mona-appimage-${{ github.sha }}
+          name: electrum-appimage-${{ github.sha }}
           path: dist/*.AppImage
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
@@ -174,10 +175,10 @@ jobs:
         include:
           - variant: full
             omit_unclean: '0'
-            artifact_name: electrum-mona-tarball
+            artifact_name: electrum-tarball
           - variant: source-only
             omit_unclean: '1'
-            artifact_name: electrum-mona-sourceonly-tarball
+            artifact_name: electrum-sourceonly-tarball
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -197,44 +198,6 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}-${{ github.sha }}
           path: dist/*.tar.gz
-          retention-days: ${{ env.ARTIFACT_RETENTION }}
-          if-no-files-found: error
-          compression-level: 0
-
-  # Electrum-MONA: not part of upstream's workflow. Unsigned build, to be able to test on macOS
-  # without owning a mac. The build is x86_64-only (see ARCHFLAGS in make_osx.sh), so it needs
-  # an Intel runner; the result runs on Apple Silicon through Rosetta.
-  macos:
-    name: "build: macOS (unsigned)"
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'macos' }}
-    runs-on: macos-15-intel
-    timeout-minutes: 120
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Cache macOS build (pip, native libs, pyinstaller)
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: contrib/osx/.cache
-          key: macos-build-${{ hashFiles('contrib/deterministic-build/*.txt', 'contrib/make_libsecp256k1.sh', 'contrib/make_libusb.sh', 'contrib/make_zbar.sh', 'contrib/osx/**', '!contrib/osx/.cache') }}
-
-      - name: Build macOS app
-        run: |
-          # make_osx.sh installs python from python.org and expects "python3" to be that one
-          export PATH="/Library/Frameworks/Python.framework/Versions/3.12/bin:$PATH"
-          ./contrib/osx/make_osx.sh
-
-      - name: List output
-        run: ls -lah dist/
-
-      - name: Upload macOS dmg
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: electrum-mona-macos-${{ github.sha }}
-          path: dist/*.dmg
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
           compression-level: 0

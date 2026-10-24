@@ -1,13 +1,13 @@
 [app]
 
 # (str) Title of your application
-title = Electrum-MONA
+title = Electrum
 
 # (str) Package name
-package.name = Electrum_MONA
+package.name = Electrum
 
 # (str) Package domain (needed for android/ios packaging)
-package.domain = org.electrum_mona
+package.domain = org.electrum
 
 # (str) Source code where the main.py live
 source.dir = .
@@ -28,24 +28,24 @@ source.exclude_dirs =
     tests,
     fastlane,
     electrum/www,
-    electrum_mona/scripts,
-    electrum_mona/utils,
-    electrum_mona/gui/qt,
-    electrum_mona/plugins/audio_modem,
-    electrum_mona/plugins/bitbox02,
-    electrum_mona/plugins/coldcard,
-    electrum_mona/plugins/digitalbitbox,
-    electrum_mona/plugins/jade,
-    electrum_mona/plugins/keepkey,
-    electrum_mona/plugins/ledger,
-    electrum_mona/plugins/nwc,
-    electrum_mona/plugins/payserver,
-    electrum_mona/plugins/revealer,
-    electrum_mona/plugins/safe_t,
-    electrum_mona/plugins/swapserver,
-    electrum_mona/plugins/timelock_recovery,
-    electrum_mona/plugins/trezor,
-    electrum_mona/plugins/watchtower,
+    electrum/scripts,
+    electrum/utils,
+    electrum/gui/qt,
+    electrum/plugins/audio_modem,
+    electrum/plugins/bitbox02,
+    electrum/plugins/coldcard,
+    electrum/plugins/digitalbitbox,
+    electrum/plugins/jade,
+    electrum/plugins/keepkey,
+    electrum/plugins/ledger,
+    electrum/plugins/nwc,
+    electrum/plugins/payserver,
+    electrum/plugins/revealer,
+    electrum/plugins/safe_t,
+    electrum/plugins/swapserver,
+    electrum/plugins/timelock_recovery,
+    electrum/plugins/trezor,
+    electrum/plugins/watchtower,
     packages/qdarkstyle,
     packages/qtpy,
     packages/bin,
@@ -55,13 +55,15 @@ source.exclude_dirs =
 
 # (list) List of exclusions using pattern matching
 source.exclude_patterns = Makefile,setup*,
+    # the android zxing scanner is built through the p4a recipe
+    electrum/libZXing.*,
     # not reproducible:
     packages/aiohttp-*.dist-info/*,
     packages/frozenlist-*.dist-info/*
 
 # (str) Application versioning (method 1)
 version.regex = ELECTRUM_VERSION = '(.*)'
-version.filename = %(source.dir)s/electrum_mona/version.py
+version.filename = %(source.dir)s/electrum/version.py
 
 # (str) Application versioning (method 2)
 #version = 1.9.8
@@ -73,22 +75,20 @@ requirements =
     python3,
     android,
     openssl,
-    plyer,
     libffi,
     libsecp256k1,
     pycryptodomex,
     pyqt6sip,
     pyqt6,
-    libzbar,
-    lyra2re2_hash
+    libzxing
 
 # (str) Presplash of the application
-presplash.filename = %(source.dir)s/electrum_mona/gui/icons/electrum_presplash.png
+presplash.filename = %(source.dir)s/electrum/gui/icons/electrum_presplash.png
 
 # (str) Icon of the application
-icon.filename = %(source.dir)s/electrum_mona/gui/icons/android_electrum_icon_legacy.png
-icon.adaptive_foreground.filename = %(source.dir)s/electrum_mona/gui/icons/android_electrum_icon_foreground.png
-icon.adaptive_background.filename = %(source.dir)s/electrum_mona/gui/icons/android_electrum_icon_background.png
+icon.filename = %(source.dir)s/electrum/gui/icons/android_electrum_icon_legacy.png
+icon.adaptive_foreground.filename = %(source.dir)s/electrum/gui/icons/android_electrum_icon_foreground.png
+icon.adaptive_background.filename = %(source.dir)s/electrum/gui/icons/android_electrum_icon_background.png
 
 # (str) Supported orientation (one of landscape, portrait or all)
 orientation = portrait
@@ -152,27 +152,19 @@ android.accept_sdk_license = True
 # down the build process. Allows wildcards matching, for example:
 # OUYA-ODK/libs/*.jar
 #android.add_jars = foo.jar,bar.jar,path/to/more/*.jar
-#android.add_jars = lib/android/zbar.jar
 
-android.add_jars = .buildozer/android/platform/*/build/libs_collections/Electrum_MONA/jar/*.jar
-
-
-android.add_aars =
-    contrib/android/.cache/aars/BarcodeScannerView.aar,
-    contrib/android/.cache/aars/CameraView.aar,
-    contrib/android/.cache/aars/zxing-cpp.aar
+android.add_jars = .buildozer/android/platform/*/build/libs_collections/Electrum/jar/*.jar
 
 
 # (list) List of Java files to add to the android project (can be java or a
 # directory containing the files)
-android.add_src = electrum_mona/gui/qml/java_classes/
+android.add_src = electrum/gui/qml/java_classes/
 
-# kotlin-stdlib is required for zxing-cpp (BarcodeScannerView)
-android.gradle_dependencies =
-    androidx.core:core:1.16.0,
-    org.jetbrains.kotlin:kotlin-stdlib:1.8.22
+# (bool) Enable AndroidX support. We don't use any androidx packages, keep it
+# disabled so gradle fails the build if one gets pulled in.
+android.enable_androidx = False
 
-android.add_activities = org.electrum.qr.SimpleScannerActivity, org.electrum.biometry.BiometricActivity
+android.add_activities = org.electrum.biometry.BiometricActivity
 
 # (list) Put these files or directories in the apk res directory.
 # The option may be used in three ways, the value may contain one or zero ':'
@@ -184,7 +176,7 @@ android.add_activities = org.electrum.qr.SimpleScannerActivity, org.electrum.bio
 # 3) A directory, here 'legal_resources' must contain one or more directories,
 # each of a resource kind:  drawable, xml, etc...
 # android.add_resources = legal_resources
-android.add_resources = electrum_mona/gui/qml/android_res/layout:layout
+android.add_resources = electrum/gui/icons/electrum_light_icon.png:drawable
 
 # (str) python-for-android branch to use, if not master, useful to try
 # not yet merged features.

@@ -10,7 +10,7 @@ import unittest
 
 import electrum_ecc as ecc
 
-from electrum_mona.descriptor import (
+from electrum.descriptor import (
     parse_descriptor,
     MultisigDescriptor,
     SHDescriptor,
@@ -20,7 +20,7 @@ from electrum_mona.descriptor import (
     WSHDescriptor,
     PubkeyProvider,
 )
-from electrum_mona.util import bfh
+from electrum.util import bfh
 
 from . import ElectrumTestCase, as_testnet
 
@@ -180,6 +180,14 @@ class TestDescriptor(ElectrumTestCase):
 
     def test_parse_empty_descriptor(self):
         self.assertRaises(ValueError, parse_descriptor, "")
+
+    @as_testnet
+    def test_parse_descriptor_rejects_trailing_characters(self):
+        key = "tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B"
+        # trailing characters after the closing parenthesis must not be silently ignored
+        self.assertRaises(ValueError, parse_descriptor, "wpkh({}/0/0)abc".format(key))
+        # the same applies to the closing parenthesis of a nested descriptor
+        self.assertRaises(ValueError, parse_descriptor, "sh(wpkh({}/0/0))x".format(key))
 
     @as_testnet
     def test_parse_descriptor_replace_h(self):

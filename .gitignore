@@ -4,10 +4,8 @@
 *.swp
 build/
 dist/
-dist-release/
-tmp/
 *.egg/
-Electrum_MONA.egg-info/
+Electrum.egg-info/
 .devlocaltmp/
 *_trial_temp
 packages
@@ -19,7 +17,7 @@ bin/
 .idea
 .mypy_cache
 .vscode
-electrum-mona_data
+electrum_data
 .DS_Store
 contrib/trigger_website
 contrib/trigger_binaries
@@ -29,9 +27,6 @@ contrib/trigger_binaries
 .cache/
 .coverage
 .pytest_cache
-.pyre/
-.pyre_configuration
-.watchmanconfig
 
 # build workspaces
 contrib/build-wine/tmp/
@@ -46,13 +41,12 @@ contrib/osx/build-venv/
 contrib/android/android_debug.keystore
 contrib/android/.cache/
 contrib/secp256k1/
-contrib/zbar/
 contrib/libusb/
 contrib/.venv_make_packages/
 
 # shared objects
-electrum_mona/*.so
-electrum_mona/*.so.*
-electrum_mona/*.dll
-electrum_mona/*.dylib
+electrum/*.so
+electrum/*.so.*
+electrum/*.dll
+electrum/*.dylib
 contrib/osx/*.dylib

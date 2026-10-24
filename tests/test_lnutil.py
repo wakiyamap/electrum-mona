@@ -3,9 +3,9 @@ import os
 import json
 from typing import Dict, List
 
-from electrum_mona import bitcoin
-from electrum_mona.json_db import StoredDict
-from electrum_mona.lnutil import (
+from electrum import bitcoin
+from electrum.json_db import StoredDict
+from electrum.lnutil import (
     RevocationStore, get_per_commitment_secret_from_seed, make_offered_htlc, make_received_htlc, make_commitment,
     make_htlc_tx_witness, make_htlc_tx_output, make_htlc_tx_inputs, secret_to_pubkey, derive_blinded_pubkey,
     derive_privkey, derive_pubkey, make_htlc_tx, extract_ctn_from_tx, get_compressed_pubkey_from_bech32,
@@ -14,13 +14,13 @@ from electrum_mona.lnutil import (
     ImportedChannelBackupStorage, OnchainChannelBackupStorage, list_enabled_ln_feature_bits, PaymentFeeBudget,
     LnFeatureContexts, Keypair, OnlyPubkeyKeypair, LOCAL
 )
-from electrum_mona.util import bfh, MyEncoder
-from electrum_mona.transaction import Transaction, PartialTransaction, Sighash
-from electrum_mona.lnworker import LNWallet
-from electrum_mona.lnchannel import ChannelBackup
-from electrum_mona.wallet import Standard_Wallet
-from electrum_mona.wallet_db import WalletDB, FINAL_SEED_VERSION
-from electrum_mona.simple_config import SimpleConfig
+from electrum.util import bfh, MyEncoder
+from electrum.transaction import Transaction, PartialTransaction, Sighash
+from electrum.lnworker import LNWallet
+from electrum.lnchannel import ChannelBackup
+from electrum.wallet import Standard_Wallet
+from electrum.wallet_db import WalletDB, FINAL_SEED_VERSION
+from electrum.simple_config import SimpleConfig
 
 from . import ElectrumTestCase, as_testnet
 from . import restore_wallet_from_text__for_unittest
@@ -803,7 +803,7 @@ class TestLNUtil(ElectrumTestCase):
     def test_commitment_tx_anchors_test_vectors(self):
         # this test is only valid for the original anchor output test vectors (not anchors-zero-fee-htlcs),
         # therefore we patch the effective htlc tx weight to result in a finite weight
-        from electrum_mona import lnutil
+        from electrum import lnutil
         effective_htlc_tx_weight_original = lnutil.effective_htlc_tx_weight
 
         def effective_htlc_tx_weight_patched(success: bool, has_anchors: bool):
@@ -1209,13 +1209,14 @@ class TestLNUtil(ElectrumTestCase):
         cb_with_alias = dataclasses.replace(reference, channel_type=reference.channel_type | ChannelType.OPTION_SCID_ALIAS)
         self.assertEqual(reference.channel_type, cb_with_alias.channel_type)
         chan_backup = ChannelBackup(decoded_cb, lnworker=None)
-        self.assertEqual(
-            Keypair(
-                privkey=bfh('f406b0899040d762a326035631c2ce38b22c2db18102ab9e3c666c87d9e0ab65'),
-                pubkey=bfh('0393145d5cb5d8a73cdffa3caaf3204ae0b2cf0c7a1a4b62c85d2182fefaaeee5e'),
-            ),
-            chan_backup.config[LOCAL].payment_basepoint,
+        payment_basepoint = Keypair(
+            privkey=bfh('f406b0899040d762a326035631c2ce38b22c2db18102ab9e3c666c87d9e0ab65'),
+            pubkey=bfh('0393145d5cb5d8a73cdffa3caaf3204ae0b2cf0c7a1a4b62c85d2182fefaaeee5e'),
         )
+        # this backup carries the payment_basepoint privkey; the config holds pubkeys only
+        self.assertEqual(payment_basepoint, chan_backup.keys.payment_basepoint)
+        self.assertEqual(OnlyPubkeyKeypair(payment_basepoint.pubkey),
+                         chan_backup.config[LOCAL].payment_basepoint)
 
     def test_onchain_channel_backup_json_roundtrip(self):
         cb = OnchainChannelBackupStorage(

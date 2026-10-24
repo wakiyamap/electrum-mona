@@ -3,8 +3,8 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
-from electrum_mona import SimpleConfig
-from electrum_mona.gui.qml.qeconfig import QEConfig
+from electrum import SimpleConfig
+from electrum.gui.qml.qeconfig import QEConfig
 
 from .qt_util import QETestCase, qt_test
 
@@ -17,7 +17,7 @@ class TestConfig(QETestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls._unittest_base_path = tempfile.mkdtemp(prefix="electrum-unittest-base-")
-        electrum_path = os.path.join(cls._unittest_base_path, "electrum_mona")
+        electrum_path = os.path.join(cls._unittest_base_path, "electrum")
         config = SimpleConfig({'electrum_path': electrum_path})
         QEConfig(config)
 
@@ -97,16 +97,16 @@ class TestConfig(QETestCase):
         self.assertTrue(a.match('1.').hasMatch())
         self.assertTrue(a.match('1.00000000').hasMatch())
         self.assertFalse(a.match('1.000000000').hasMatch())
-        self.assertTrue(a.match('105120000').hasMatch())
-        self.assertFalse(a.match('1105120000').hasMatch())
+        self.assertTrue(a.match('21000000').hasMatch())
+        self.assertFalse(a.match('121000000').hasMatch())
 
         self.assertTrue(b.match('1').hasMatch())
         self.assertTrue(b.match('1.').hasMatch())
         self.assertTrue(b.match('1.00000000').hasMatch())
         self.assertTrue(b.match('1.00000000000').hasMatch())
         self.assertFalse(b.match('1.000000000000').hasMatch())
-        self.assertTrue(b.match('105120000').hasMatch())
-        self.assertFalse(b.match('1105120000').hasMatch())
+        self.assertTrue(b.match('21000000').hasMatch())
+        self.assertFalse(b.match('121000000').hasMatch())
 
         self.q.config.BTC_AMOUNTS_DECIMAL_POINT = 5
 
@@ -120,16 +120,16 @@ class TestConfig(QETestCase):
         self.assertTrue(a.match('1.').hasMatch())
         self.assertTrue(a.match('1.00000').hasMatch())
         self.assertFalse(a.match('1.000000').hasMatch())
-        self.assertTrue(a.match('105120000000').hasMatch())
-        self.assertFalse(a.match('1105120000000').hasMatch())
+        self.assertTrue(a.match('21000000000').hasMatch())
+        self.assertFalse(a.match('121000000000').hasMatch())
 
         self.assertTrue(b.match('1').hasMatch())
         self.assertTrue(b.match('1.').hasMatch())
         self.assertTrue(b.match('1.0000000').hasMatch())
         self.assertTrue(b.match('1.00000000').hasMatch())
         self.assertFalse(b.match('1.000000000000').hasMatch())
-        self.assertTrue(b.match('105120000000').hasMatch())
-        self.assertFalse(b.match('1105120000000').hasMatch())
+        self.assertTrue(b.match('21000000000').hasMatch())
+        self.assertFalse(b.match('121000000000').hasMatch())
 
         self.q.config.BTC_AMOUNTS_DECIMAL_POINT = 0
 
@@ -141,12 +141,12 @@ class TestConfig(QETestCase):
 
         self.assertTrue(a.match('1').hasMatch())
         self.assertFalse(a.match('1.').hasMatch())
-        self.assertTrue(a.match('10512000000000000').hasMatch())
-        self.assertFalse(a.match('110512000000000000').hasMatch())
+        self.assertTrue(a.match('2100000000000000').hasMatch())
+        self.assertFalse(a.match('12100000000000000').hasMatch())
 
         self.assertTrue(b.match('1').hasMatch())
         self.assertTrue(b.match('1.').hasMatch())
         self.assertTrue(b.match('1.000').hasMatch())
         self.assertFalse(b.match('1.0000').hasMatch())
-        self.assertTrue(b.match('10512000000000000').hasMatch())
-        self.assertFalse(b.match('110512000000000000').hasMatch())
+        self.assertTrue(b.match('2100000000000000').hasMatch())
+        self.assertFalse(b.match('12100000000000000').hasMatch())

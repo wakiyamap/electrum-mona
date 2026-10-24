@@ -3,7 +3,7 @@
 
 set -e
 
-venv_dir=~/.electrum-mona-venv
+venv_dir=~/.electrum-venv
 contrib="$(dirname "$0")"
 
 # note: we should not use a higher version of python than what the binaries bundle

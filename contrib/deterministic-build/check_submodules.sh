@@ -3,7 +3,7 @@
 set -e
 
 PROJECT_ROOT="$(dirname "$(readlink -e "$0")")/../.."
-LOCALE="$PROJECT_ROOT/electrum_mona/locale/"
+LOCALE="$PROJECT_ROOT/electrum/locale/"
 
 cd "$PROJECT_ROOT"
 
@@ -21,8 +21,8 @@ function get_git_mtime {
 fail=0
 
 
-if [ $(date +%s -d "4 weeks ago") -gt $(get_git_mtime "$LOCALE") ]; then
-    echo "Last update from electrum-locale is older than 4 weeks."\
+if [ $(date +%s -d "2 weeks ago") -gt $(get_git_mtime "$LOCALE") ]; then
+    echo "Last update from electrum-locale is older than 2 weeks."\
          "Please update it to incorporate the latest translations from crowdin."
     fail=1
 fi

@@ -31,21 +31,21 @@ import time
 
 import electrum_ecc as ecc
 
-from electrum_mona import bitcoin
-from electrum_mona import lnchannel
-from electrum_mona import lnutil
-from electrum_mona.crypto import sha256
-from electrum_mona.lnutil import (
+from electrum import bitcoin
+from electrum import lnchannel
+from electrum import lnutil
+from electrum.crypto import sha256
+from electrum.lnutil import (
     SENT, LOCAL, REMOTE, RECEIVED, UpdateAddHtlc, ChannelType,
     effective_htlc_tx_weight, ZEROCONF_TIMEOUT,
-    CHANNEL_OPENING_TIMEOUT_SEC,
+    CHANNEL_OPENING_TIMEOUT_SEC, ChannelKeys,
 )
-from electrum_mona.logging import console_stderr_handler
-from electrum_mona.lnchannel import ChannelState, Channel
-from electrum_mona.util import TxMinedInfo
-from electrum_mona.address_synchronizer import TX_HEIGHT_LOCAL
-from electrum_mona.lnsweep import SweepInfo
-from electrum_mona.transaction import PartialTransaction, PartialTxOutput, Transaction, TxInput, tx_from_any
+from electrum.logging import console_stderr_handler
+from electrum.lnchannel import ChannelState, Channel
+from electrum.util import TxMinedInfo
+from electrum.address_synchronizer import TX_HEIGHT_LOCAL
+from electrum.lnsweep import SweepInfo
+from electrum.transaction import PartialTransaction, PartialTxOutput, Transaction, TxInput, tx_from_any
 
 from . import ElectrumTestCase
 from .lnhelpers import create_test_channels
@@ -209,7 +209,7 @@ class TestChannel(ElectrumTestCase):
         self.assertEqual(bob_channel.included_htlcs(REMOTE, RECEIVED, 0), [])
         self.assertEqual(bob_channel.included_htlcs(REMOTE, RECEIVED, 1), [])
 
-        from electrum_mona.lnutil import extract_ctn_from_tx_and_chan
+        from electrum.lnutil import extract_ctn_from_tx_and_chan
         tx0 = str(alice_channel.force_close_tx())
         self.assertEqual(alice_channel.get_oldest_unrevoked_ctn(LOCAL), 0)
         self.assertEqual(extract_ctn_from_tx_and_chan(alice_channel.force_close_tx(), alice_channel), 0)
@@ -434,7 +434,7 @@ class TestChannel(ElectrumTestCase):
         self.assertEqual(bob_channel.total_msat(RECEIVED), one_bitcoin_in_msat, "bob satoshis received incorrect")
         self.assertEqual(bob_channel.total_msat(SENT), 5 * one_bitcoin_in_msat, "bob satoshis sent incorrect")
 
-    def alice_to_bob_fee_update(self, fee=111100):  # monacoin: must be >= FEERATE_PER_KW_MIN_RELAY_LIGHTNING
+    def alice_to_bob_fee_update(self, fee=1111):
         aoldctx = self.alice_channel.get_next_commitment(REMOTE).outputs()
         self.alice_channel.update_fee(fee, True)
         anewctx = self.alice_channel.get_next_commitment(REMOTE).outputs()
@@ -916,6 +916,45 @@ class TestChannel(ElectrumTestCase):
         self.assertIn(phash, self.bob_channel.get_payments(status='inflight', direction=RECEIVED))
         self.assertEqual({}, self.bob_channel.get_payments(status='inflight', direction=SENT))
 
+    def test_check_against_config(self):
+        """Keys re-derived from our secrets must match the pubkeys in our config."""
+        chan = self.alice_channel
+        keys = ChannelKeys.from_seed(
+            chan.keys.channel_seed, multisig_privkey=chan.keys.multisig_key.privkey)
+        self.assertEqual(chan.keys, keys)
+        keys.check_against_config(chan.config[LOCAL])
+        # wrong multisig privkey
+        keys = ChannelKeys.from_seed(chan.keys.channel_seed, multisig_privkey=os.urandom(32))
+        with self.assertRaisesRegex(Exception, 'multisig_key'):
+            keys.check_against_config(chan.config[LOCAL])
+        # wrong channel seed
+        keys = ChannelKeys.from_seed(os.urandom(32), multisig_privkey=chan.keys.multisig_key.privkey)
+        with self.assertRaisesRegex(Exception, 'basepoint'):
+            keys.check_against_config(chan.config[LOCAL])
+        # payment_basepoint is not checked above; for anchor channels we derive its privkey
+        if chan.has_anchors():
+            privkey = chan.get_payment_basepoint_privkey()
+            self.assertEqual(chan.config[LOCAL].payment_basepoint.pubkey,
+                             ecc.ECPrivkey(privkey).get_public_key_bytes())
+
+    async def test_local_per_commitment_points_follow_our_ctn(self):
+        """We keep our own per-commitment points in the config, like the remote's, so
+        that both sides are described in the same way. They must follow our ctn.
+        """
+        def check_both_channels():
+            for chan in (self.alice_channel, self.bob_channel):
+                ctn = chan.get_oldest_unrevoked_ctn(LOCAL)
+                config = chan.config[LOCAL]
+                self.assertEqual(chan.keys.per_commitment_point(ctn),
+                                 config.current_per_commitment_point)
+                self.assertEqual(chan.keys.per_commitment_point(ctn + 1),
+                                 config.next_per_commitment_point)
+
+        check_both_channels()
+        for _ in range(3):
+            force_state_transition(self.alice_channel, self.bob_channel)
+            check_both_channels()
+
 
 class TestChannelNoAnchors(TestChannel):
     assert TestChannel.TEST_ANCHOR_CHANNELS is True
@@ -1032,6 +1071,30 @@ class TestAvailableToSpend(ElectrumTestCase):
 
         self.assertEqual(10 * one_mbtc_in_msat, bob_channel.available_to_spend(LOCAL))
         self.assertEqual(10 * one_mbtc_in_msat, bob_channel.available_to_spend(REMOTE))
+
+    async def test_no_htlc_slots_left_if_remote_exceeds_strict_limit(self):
+        alice_channel, bob_channel = create_test_channels(alice_lnwallet=self.alice_lnwallet, bob_lnwallet=self.bob_lnwallet)
+        # bob accepts more incoming htlcs than alice does
+        self.assertEqual(5, alice_channel.config[LOCAL].max_accepted_htlcs)
+        bob_channel.config[LOCAL].max_accepted_htlcs = 10
+        alice_channel.config[REMOTE].max_accepted_htlcs = 10
+        # Alice only applies the loose BOLT-02 limit when offering htlcs,
+        # so she can exceed the stricter limit bob applies to his own offers (see Channel.htlc_slots_left()).
+        for _ in range(alice_channel.config[LOCAL].max_accepted_htlcs + 1):  # 6 (exceeding her own max_accepted_htlcs)
+            htlc = UpdateAddHtlc(
+                payment_hash=sha256(os.urandom(32)),
+                amount_msat=one_mbtc_in_msat,
+                cltv_abs=5,
+                htlc_id=alice_channel.hm.get_next_htlc_id(LOCAL),
+            )
+            alice_channel.hm.send_htlc(htlc)
+            bob_channel.receive_htlc(htlc)
+        force_state_transition(alice_channel, bob_channel)
+        # bob now must not try to add even more htlcs, further exceeding Alice's limit
+        self.assertEqual(0, bob_channel.htlc_slots_left(LOCAL))
+        self.assertEqual(0, bob_channel.available_to_spend(LOCAL))
+        with self.assertRaisesRegex(lnutil.PaymentFailure, 'Too many HTLCs already in channel'):
+            bob_channel.add_htlc(UpdateAddHtlc(payment_hash=sha256(os.urandom(32)), amount_msat=one_mbtc_in_msat, cltv_abs=5))
 
 
 class TestAvailableToSpendNoAnchors(TestAvailableToSpend):

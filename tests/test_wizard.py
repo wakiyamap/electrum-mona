@@ -1,18 +1,20 @@
 import os
+from unittest import mock
 
-from electrum_mona import SimpleConfig
-from electrum_mona.interface import ServerAddr
-from electrum_mona.keystore import bip44_derivation, Hardware_KeyStore, KeyStore, BIP32_KeyStore
-from electrum_mona.network import NetworkParameters, ProxySettings
-from electrum_mona.plugin import Plugins, DeviceInfo, Device
-from electrum_mona.wizard import ServerConnectWizard, NewWalletWizard, WizardViewState, KeystoreWizard
-from electrum_mona.daemon import Daemon
-from electrum_mona.wallet import Abstract_Wallet, Deterministic_Wallet
-from electrum_mona import util
-from electrum_mona import slip39
-from electrum_mona.bip32 import KeyOriginInfo
-from electrum_mona import keystore
-from electrum_mona.storage import WalletStorage
+from electrum import SimpleConfig
+from electrum.interface import ServerAddr
+from electrum.keystore import bip44_derivation, Hardware_KeyStore, KeyStore, BIP32_KeyStore
+from electrum.network import NetworkParameters, ProxySettings
+from electrum.plugin import Plugins, DeviceInfo, Device
+from electrum.wizard import ServerConnectWizard, NewWalletWizard, WizardViewState, KeystoreWizard
+from electrum.daemon import Daemon
+from electrum.wallet import Abstract_Wallet, Deterministic_Wallet, restore_wallet_from_text
+from electrum import util
+from electrum.util import InvalidPassword
+from electrum import slip39
+from electrum.bip32 import KeyOriginInfo
+from electrum import keystore
+from electrum.storage import WalletStorage
 
 from . import ElectrumTestCase
 from .test_wallet_vertical import UNICODE_HORROR, WalletIntegrityHelper
@@ -40,6 +42,12 @@ class DaemonMock:
     def __init__(self, config: SimpleConfig):
         self.config = config
         self.network = NetworkMock()
+
+
+class TNewWalletWizard(NewWalletWizard):
+    def is_single_password(self):
+        """impl abstract reqd"""
+        return True
 
 
 class WizardTestCase(ElectrumTestCase):
@@ -133,11 +141,6 @@ class KeystoreWizardTestCase(WizardTestCase):
             """impl abstract reqd"""
             return True
 
-    class TNewWalletWizard(NewWalletWizard):
-        def is_single_password(self):
-            """impl abstract reqd"""
-            return True
-
     def _wizard_for(self, *, wallet_type: str = 'standard', hww: bool = False) -> tuple[KeystoreWizard, WizardViewState]:
         w = KeystoreWizardTestCase.TKeystoreWizard(self.plugins)
         start_viewstate = WizardViewState('keystore_type', {'wallet_type': wallet_type}, {})
@@ -156,7 +159,7 @@ class KeystoreWizardTestCase(WizardTestCase):
         return w, v
 
     def _create_xpub_keystore_wallet(self, *, wallet_type: str = 'standard', xpub):
-        w = KeystoreWizardTestCase.TNewWalletWizard(DaemonMock(self.config), self.plugins)
+        w = TNewWalletWizard(DaemonMock(self.config), self.plugins)
         wallet_path = self.wallet_path
         d = {
             'wallet_type': wallet_type,
@@ -261,6 +264,139 @@ class KeystoreWizardTestCase(WizardTestCase):
         with self.assertRaises(Exception) as ctx:
             wallet.enable_keystore(ks, ishww, None)
         self.assertTrue("mismatching xpubs" in ctx.exception.args[0])
+
+    async def test_haveseed_electrum__mismatching_seed__nothing_modified(self):
+        """a failed attempt to add an unrelated seed should not modify the wallet or the keystore"""
+        wallet = self._create_xpub_keystore_wallet(xpub='zpub6nAZodjgiMNf9zzX1pTqd6ZVX61ax8azhUDnWRumKVUr1VYATVoqAuqv3qKsb8WJXjxei4wei2p4vnMG9RnpKnen2kmgdhvZUmug2NnHNsr')
+        wallet.update_password(None, '1234', encrypt_storage=True)
+        self.assertTrue(wallet.storage.is_encrypted_with_user_pw())
+        self.assertFalse(wallet.db.get('use_encryption', False))
+
+        ks = keystore.from_seed('abandon bike', passphrase='', for_multisig=False)
+        with self.assertRaises(Exception) as ctx:
+            wallet.enable_keystore(ks, False, '1234')
+        self.assertTrue("mismatching xpubs" in ctx.exception.args[0])
+        self.assertTrue(wallet.get_keystore().is_watching_only())
+        self.assertFalse(wallet.db.get('use_encryption', False))
+        self.assertEqual('abandon bike', ks.get_seed(None))
+
+    async def test_enable_keystore__written_to_disk(self):
+        myxpub = 'zpub6nAZodjgiMNf9zzX1pTqd6ZVX61ax8azhUDnWRumKVUr1VYATVoqAuqv3qKsb8WJXjxei4wei2p4vnMG9RnpKnen2kmgdhvZUmug2NnHNsr'
+        wallet = self._create_xpub_keystore_wallet(xpub=myxpub)
+        ks = keystore.from_seed('9dk', passphrase='', for_multisig=False)
+        wallet.enable_keystore(ks, False, None)
+
+        wallet2 = Daemon._load_wallet(self.wallet_path, password=None, config=self.config)
+        self.assertFalse(wallet2.get_keystore().is_watching_only())
+        self.assertEqual('9dk', wallet2.get_keystore().get_seed(None))
+
+    async def test_disable_keystore__seed_removed_from_disk(self):
+        myseed = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
+        wallet = restore_wallet_from_text(myseed, path=self.wallet_path, config=self.config)['wallet']
+        xprv = wallet.get_keystore().xprv
+        with open(self.wallet_path, 'r') as f:
+            contents = f.read()
+        self.assertTrue(myseed in contents and xprv in contents)
+
+        wallet.disable_keystore(wallet.get_keystore())
+        with open(self.wallet_path, 'r') as f:
+            contents = f.read()
+        self.assertFalse(myseed in contents, "seed still in wallet file")
+        self.assertFalse(xprv in contents, "xprv still in wallet file")
+
+        wallet2 = Daemon._load_wallet(self.wallet_path, password=None, config=self.config)
+        self.assertTrue(wallet2.get_keystore().is_watching_only())
+
+    async def test_disable_enable_keystore__keystore_encryption_without_storage_encryption(self):
+        myseed = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
+        wallet = restore_wallet_from_text(
+            myseed, path=self.wallet_path, config=self.config, password='1234', encrypt_file=False)['wallet']
+        self.assertTrue(wallet.has_keystore_encryption())
+        self.assertFalse(wallet.has_storage_encryption())
+
+        # the password only protected the keystore, so after disabling it, the wallet has no password
+        wallet.disable_keystore(wallet.get_keystore())
+        self.assertFalse(wallet.has_password())
+        self.assertFalse(wallet.db.get('use_encryption'))
+
+        ks = keystore.from_seed(myseed, passphrase='', for_multisig=False)
+        wallet.enable_keystore(ks, False, None)
+        self.assertFalse(wallet.has_keystore_encryption())
+        wallet.check_password(None)
+        self.assertEqual(myseed, wallet.get_keystore().get_seed(None))
+
+    async def test_disable_enable_keystore__storage_encryption(self):
+        myseed = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
+        wallet = restore_wallet_from_text(
+            myseed, path=self.wallet_path, config=self.config, password='1234', encrypt_file=True)['wallet']
+        self.assertTrue(wallet.has_keystore_encryption())
+
+        wallet.disable_keystore(wallet.get_keystore())
+        self.assertFalse(wallet.has_keystore_encryption())
+        self.assertTrue(wallet.has_password())  # storage encryption
+
+        ks = keystore.from_seed(myseed, passphrase='', for_multisig=False)
+        wallet.enable_keystore(ks, False, '1234')
+        self.assertTrue(wallet.has_keystore_encryption())
+        wallet.check_password('1234')
+        self.assertEqual(myseed, wallet.get_keystore().get_seed('1234'))
+
+    async def test_enable_keystore__stale_use_encryption_flag(self):
+        """older versions left 'use_encryption' set when disabling the only keystore that was encrypted"""
+        myseed = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
+        wallet = restore_wallet_from_text(myseed, path=self.wallet_path, config=self.config)['wallet']
+        wallet.disable_keystore(wallet.get_keystore())
+        wallet.db.put('use_encryption', True)
+        self.assertFalse(wallet.has_password())
+
+        ks = keystore.from_seed(myseed, passphrase='', for_multisig=False)
+        wallet.enable_keystore(ks, False, None)
+        # the seed is not encrypted, so the wallet must not claim keystore encryption
+        self.assertFalse(wallet.has_keystore_encryption())
+        wallet.check_password(None)
+        self.assertEqual(myseed, wallet.get_keystore().get_seed(None))
+
+    async def test_disable_keystore__lightning(self):
+        myseed = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
+        wallet = restore_wallet_from_text(myseed, path=self.wallet_path, config=self.config)['wallet']
+        self.assertTrue(wallet.db.get('lightning_xprv'))
+        lnworker = wallet.lnworker
+
+        class FakeChannel:
+            def __init__(self, *, redeemed: bool):
+                self.redeemed = redeemed
+
+            def is_redeemed(self):
+                return self.redeemed
+
+        # no channels
+        self.assertFalse(wallet.lightning_needs_keystore())
+        # channel not fully closed
+        lnworker._channels[bytes(32)] = FakeChannel(redeemed=False)
+        self.assertTrue(wallet.lightning_needs_keystore())
+        with self.assertRaisesRegex(Exception, "needed by lightning"):
+            wallet.disable_keystore(wallet.get_keystore())
+        self.assertEqual(myseed, wallet.get_keystore().get_seed(None))
+        # channel fully closed
+        lnworker._channels[bytes(32)] = FakeChannel(redeemed=True)
+        self.assertFalse(wallet.lightning_needs_keystore())
+        # pending swap
+        with mock.patch.object(lnworker.swap_manager, 'get_pending_swaps', return_value=[object()]):
+            self.assertTrue(wallet.lightning_needs_keystore())
+            with self.assertRaisesRegex(Exception, "needed by lightning"):
+                wallet.disable_keystore(wallet.get_keystore())
+        self.assertFalse(wallet.get_keystore().is_watching_only())
+
+        wallet.disable_keystore(wallet.get_keystore())
+        self.assertTrue(wallet.get_keystore().is_watching_only())
+
+    async def test_haveseed_electrum__2fa_seed(self):
+        """unlike NewWalletWizard, KeystoreWizard cannot redirect to the 2fa flow, so 2fa seeds are invalid"""
+        w, v = self._wizard_for()
+        seed_valid, seed_type, *_ = w.validate_seed(
+            'oblige basket safe educate whale bacon celery demand novel slice various awkward', 'electrum', 'standard')
+        self.assertFalse(seed_valid)
+        self.assertEqual('2fa_segwit', seed_type)
 
     async def test_haveseed_electrum_oldseed(self):
         w, v = self._wizard_for()
@@ -425,10 +561,67 @@ class KeystoreWizardTestCase(WizardTestCase):
         self.assertFalse(wallet.get_keystores()[1].is_watching_only())
         self.assertEqual(seed1, wallet.get_keystores()[0].get_seed(None))
         self.assertEqual(seed2, wallet.get_keystores()[1].get_seed(None))
+        # wallet.keystore must keep pointing to x1
+        self.assertIs(wallet.keystore, wallet.keystores['x1'])
+        self.assertEqual(xpub1, wallet.get_master_public_key())
 
         keyorigininfo1 = wallet.get_keystores()[0].get_key_origin_info()
         wallet.disable_keystore(wallet.get_keystores()[0])
         self._sanity_checks_after_disabling_keystore(ks=wallet.get_keystores()[0], xpub=xpub1, key_origin_info=keyorigininfo1)
+        self.assertIs(wallet.keystore, wallet.keystores['x1'])
+
+    async def test_multisig__refuse_to_replace_keystore_that_is_not_watching_only(self):
+        seed1 = "bitter grass shiver impose acquire brush forget axis eager alone wine silver"
+        xpub2 = "Zpub6xwgqLvc42wXB1wEELTdALD9iXwStMUkGqBgxkJFYumaL2dWgNvUkjEDWyDFZD3fZuDWDzd1KQJ4NwVHS7hs6H6QkpNYSShfNiUZsgMdtNg"
+
+        wallet = WalletIntegrityHelper.create_multisig_wallet(
+            [
+                keystore.from_seed(seed1, passphrase='', for_multisig=True),
+                keystore.from_xpub(xpub2),
+            ],
+            '2of2',
+            config=self.config,
+            storage=WalletStorage(self.wallet_path),
+        )
+        x1 = wallet.keystores['x1']
+        self.assertFalse(x1.is_watching_only())
+
+        ks = keystore.from_seed(seed1, passphrase='', for_multisig=True)
+        with self.assertRaises(Exception) as ctx:
+            wallet.enable_keystore(ks, False, None)
+        self.assertTrue("not watching-only" in ctx.exception.args[0])
+        self.assertIs(x1, wallet.keystores['x1'])
+        self.assertEqual(seed1, wallet.keystores['x1'].get_seed(None))
+
+    async def test_multisig__keystore_encryption_without_storage_encryption(self):
+        seed1 = "bitter grass shiver impose acquire brush forget axis eager alone wine silver"
+        seed2 = "snow nest raise royal more walk demise rotate smooth spirit canyon gun"
+        xpub2 = "Zpub6xwgqLvc42wXB1wEELTdALD9iXwStMUkGqBgxkJFYumaL2dWgNvUkjEDWyDFZD3fZuDWDzd1KQJ4NwVHS7hs6H6QkpNYSShfNiUZsgMdtNg"
+
+        wallet = WalletIntegrityHelper.create_multisig_wallet(
+            [
+                keystore.from_seed(seed1, passphrase='', for_multisig=True),
+                keystore.from_xpub(xpub2),
+            ],
+            '2of2',
+            config=self.config,
+            storage=WalletStorage(self.wallet_path),
+        )
+        wallet.update_password(None, '1234', encrypt_storage=False)
+        self.assertTrue(wallet.has_keystore_encryption())
+        self.assertFalse(wallet.has_storage_encryption())
+
+        ks = keystore.from_seed(seed2, passphrase='', for_multisig=True)
+        with self.assertRaises(InvalidPassword):
+            wallet.enable_keystore(ks, False, 'wrong password')
+        self.assertTrue(wallet.keystores['x2'].is_watching_only())
+
+        ks = keystore.from_seed(seed2, passphrase='', for_multisig=True)
+        wallet.enable_keystore(ks, False, '1234')
+        self.assertFalse(wallet.keystores['x2'].is_watching_only())
+        # the newly added seed must be encrypted with the wallet password
+        wallet.check_password('1234')
+        self.assertEqual(seed2, wallet.keystores['x2'].get_seed('1234'))
 
 
 class WalletWizardTestCase(WizardTestCase):
@@ -439,9 +632,8 @@ class WalletWizardTestCase(WizardTestCase):
         name: str = "mywallet",
         wallet_type: str,
     ) -> NewWalletWizard:
-        w = NewWalletWizard(DaemonMock(self.config), self.plugins)
-        if wallet_type == '2fa':
-            w.plugins.get_plugin('trustedcoin').extend_wizard(w)
+        w = TNewWalletWizard(DaemonMock(self.config), self.plugins)
+        w.plugins.get_plugin('trustedcoin').extend_wizard(w)
         v_init = w.start()
         self.assertEqual('wallet_name', v_init.view)
         d = {'wallet_name': name}
@@ -895,6 +1087,57 @@ class WalletWizardTestCase(WizardTestCase):
         v = w.resolve_next(v.view, d)
         self._set_password_and_check_address(v=v, w=w, recv_addr="bc1qcnu9ay4v3w0tawuxe6wlh6mh33rrpauqnufdgkxx7we8vpx3e6wqa25qud")
 
+    async def test_2fa_haveseed_redirected_from_standard(self):
+        w = self._wizard_for(wallet_type='standard')
+        v = w._current
+        d = v.wizard_data
+        self.assertEqual('keystore_type', v.view)
+
+        d.update({'keystore_type': 'haveseed'})
+        v = w.resolve_next(v.view, d)
+        self.assertEqual('have_seed', v.view)
+        myseed = 'oblige basket safe educate whale bacon celery demand novel slice various awkward'
+        self.assertTrue(w.validate_seed(myseed, 'electrum', 'standard')[0])
+        d.update({
+            'seed': myseed,
+            'seed_type': '2fa_segwit', 'seed_extend': False, 'seed_variant': 'electrum',
+        })
+        self.assertFalse(w.is_last_view(v.view, d))
+        v = w.resolve_next(v.view, d)
+        self.assertEqual('trustedcoin_keep_disable', v.view)
+        self.assertEqual('2fa', v.wizard_data['wallet_type'])
+        d.update({'trustedcoin_keepordisable': 'keep'})
+        v = w.resolve_next(v.view, d)
+        self.assertEqual('trustedcoin_tos', v.view)
+        v = w.resolve_next(v.view, d)
+        self.assertEqual('trustedcoin_show_confirm_otp', v.view)
+        v = w.resolve_next(v.view, d)
+        wallet = self._set_password_and_check_address(v=v, w=w, recv_addr="bc1qnf5qafvpx0afk47433j3tt30pqkxp5wa263m77wt0pvyqq67rmfs522m94")
+        self.assertEqual('2fa', wallet.wallet_type)
+
+    async def test_2fa_haveseed_redirected_from_standard_passphrase(self):
+        w = self._wizard_for(wallet_type='standard')
+        v = w._current
+        d = v.wizard_data
+        self.assertEqual('keystore_type', v.view)
+
+        d.update({'keystore_type': 'haveseed'})
+        v = w.resolve_next(v.view, d)
+        self.assertEqual('have_seed', v.view)
+        d.update({
+            'seed': 'oblige basket safe educate whale bacon celery demand novel slice various awkward',
+            'seed_type': '2fa_segwit', 'seed_extend': True, 'seed_variant': 'electrum',
+        })
+        v = w.resolve_next(v.view, d)
+        self.assertEqual('trustedcoin_have_ext', v.view)
+        d.update({'seed_extra_words': UNICODE_HORROR})
+        v = w.resolve_next(v.view, d)
+        self.assertEqual('trustedcoin_keep_disable', v.view)
+        d.update({'trustedcoin_keepordisable': 'disable'})
+        v = w.resolve_next(v.view, d)
+        wallet = self._set_password_and_check_address(v=v, w=w, recv_addr="bc1qcnu9ay4v3w0tawuxe6wlh6mh33rrpauqnufdgkxx7we8vpx3e6wqa25qud")
+        self.assertEqual('2fa', wallet.wallet_type)
+
     async def test_create_standard_wallet_trezor(self):
         # bip39 seed for trezor: "history six okay anchor sheriff flock atom tomorrow foster aerobic eternal foam"
         w = self._wizard_for(wallet_type='standard')
@@ -1170,3 +1413,18 @@ class WalletWizardTestCase(WizardTestCase):
             {"bc1qq2tmmcngng78nllq2pvrkchcdukemtj56uyue0", "1LNvv5h6QHoYv1nJcqrp13T2TBkD2sUGn1", "1FJEEB8ihPMbzs2SkLmr37dHyRFzakqUmo"},
         )
         self.assertFalse(wallet.can_enable_disable_keystore(wallet.keystore))
+
+    async def test_create_imported_wallet_from_wif_keys__unsupported_type(self):
+        w = self._wizard_for(wallet_type='imported')
+        v = w._current
+        d = v.wizard_data
+        self.assertEqual('imported', v.view)
+
+        d.update({
+            'private_key_list':
+                'p2wpkh:L1cgMEnShp73r9iCukoPE3MogLeueNYRD9JVsfT1zVHyPBR3KqBY\n'
+                'p2wsh:KyQ2voUQj71P6E9KyDFqQoYMMm3yKKAPMKbfqZccib6xWxbWHCex\n'})
+        v = w.resolve_next(v.view, d)
+        with self.assertRaises(util.UserFacingException) as ctx:
+            self._set_password_and_check_address(v=v, w=w, recv_addr=None)
+        self.assertEqual("Importing individual private keys of type 'p2wsh' is not supported.", str(ctx.exception))

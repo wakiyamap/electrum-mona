@@ -5,8 +5,8 @@ set -e
 # Parameterize
 PYTHON_VERSION=3.12.10
 PY_VER_MAJOR="3.12"  # as it appears in fs paths
-PACKAGE=Electrum-MONA
-GIT_REPO=https://github.com/wakiyamap/electrum-mona
+PACKAGE=Electrum
+GIT_REPO=https://github.com/spesmilo/electrum
 
 export GCC_STRIP_BINARIES="1"
 export PYTHONDONTWRITEBYTECODE=1  # don't create __pycache__/ folders with .pyc files
@@ -85,7 +85,9 @@ python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: 
     || fail "Could not install build dependencies (mac)"
 
 info "Installing some build-time deps for compilation..."
-brew install autoconf automake libtool gettext coreutils pkgconfig
+# cmake, wget and gcc@14 are required for zxing-cpp.
+# gcc can be removed with a C++ 20 compatible compiler becoming available (newer MacOS version)
+brew install autoconf automake libtool gettext coreutils pkgconfig cmake wget gcc@14
 
 info "Building PyInstaller."
 PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
@@ -143,7 +145,7 @@ info "preparing electrum-locale."
     fi
     "$CONTRIB/locale/build_cleanlocale.sh"
     # we want the binary to have only compiled (.mo) locale files; not source (.po) files
-    rm -r "$PROJECT_ROOT/electrum_mona/locale/locale"/*/electrum.po
+    rm -r "$PROJECT_ROOT/electrum/locale/locale"/*/electrum.po
 )
 
 
@@ -153,15 +155,19 @@ else
     info "Building libsecp256k1 dylib..."
     "$CONTRIB"/make_libsecp256k1.sh || fail "Could not build libsecp"
 fi
-cp -f "$DLL_TARGET_DIR"/libsecp256k1.*.dylib "$PROJECT_ROOT/electrum_mona" || fail "Could not copy libsecp256k1 dylib"
+cp -f "$DLL_TARGET_DIR"/libsecp256k1.*.dylib "$PROJECT_ROOT/electrum" || fail "Could not copy libsecp256k1 dylib"
 
-if [ ! -f "$DLL_TARGET_DIR/libzbar.0.dylib" ]; then
-    info "Building ZBar dylib..."
-    "$CONTRIB"/make_zbar.sh || fail "Could not build ZBar dylib"
+if [ ! -f "$DLL_TARGET_DIR/libZXing.dylib" ]; then
+    info "Building zxing-cpp dylib..."
+    # Build zxing with the installed gcc 14 for C++20 support and statically link the runtimes into the library.
+    CC="$(brew --prefix gcc@14)/bin/gcc-14" \
+    CXX="$(brew --prefix gcc@14)/bin/g++-14" \
+    LDFLAGS="-static-libgcc -static-libstdc++ -Wl,-S" \
+        "$CONTRIB"/make_zxing.sh || fail "Could not build zxing-cpp dylib"
 else
-    info "Skipping ZBar build: reusing already built dylib."
+    info "Skipping zxing-cpp build: reusing already built dylib."
 fi
-cp -f "$DLL_TARGET_DIR/libzbar.0.dylib" "$PROJECT_ROOT/electrum_mona/" || fail "Could not copy ZBar dylib"
+cp -f "$DLL_TARGET_DIR/libZXing.dylib" "$PROJECT_ROOT/electrum/" || fail "Could not copy zxing-cpp dylib"
 
 if [ ! -f "$DLL_TARGET_DIR/libusb-1.0.dylib" ]; then
     info "Building libusb dylib..."
@@ -169,7 +175,7 @@ if [ ! -f "$DLL_TARGET_DIR/libusb-1.0.dylib" ]; then
 else
     info "Skipping libusb build: reusing already built dylib."
 fi
-cp -f "$DLL_TARGET_DIR/libusb-1.0.dylib" "$PROJECT_ROOT/electrum_mona/" || fail "Could not copy libusb dylib"
+cp -f "$DLL_TARGET_DIR/libusb-1.0.dylib" "$PROJECT_ROOT/electrum/" || fail "Could not copy libusb dylib"
 
 
 # opt out of compiling C extensions
@@ -179,7 +185,7 @@ export PROPCACHE_NO_EXTENSIONS=1
 export ELECTRUM_ECC_DONT_COMPILE=1
 
 info "Installing requirements..."
-CFLAGS="$CFLAGS $LYRA2RE2_HASH_CFLAGS" python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: \
+python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: \
     --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location \
     -Ir ./contrib/deterministic-build/requirements.txt \
     || fail "Could not install requirements"
@@ -211,7 +217,7 @@ find "$VENV_DIR/lib/python$PY_VER_MAJOR/site-packages/" -type f -name '*.so' -pr
 info "Faking timestamps..."
 find . -exec touch -t '200101220000' {} + || true
 
-# note: no --dirty, as we have dirtied electrum_mona/locale/ ourselves.
+# note: no --dirty, as we have dirtied electrum/locale/ ourselves.
 VERSION=$(git describe --tags --always)
 
 info "Building binary"
@@ -221,7 +227,7 @@ info "Finished building unsigned dist/${PACKAGE}.app. This hash should be reprod
 find "dist/${PACKAGE}.app" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256
 
 info "Creating unsigned .DMG"
-hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-mona-$VERSION-unsigned.dmg || fail "Could not create .DMG"
+hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-$VERSION-unsigned.dmg || fail "Could not create .DMG"
 
 info "App was built successfully but was not code signed. Users may get security warnings from macOS."
 info "Now you also need to run sign_osx.sh to codesign/notarize the binary."

@@ -5,7 +5,7 @@ set -e
 security -v unlock-keychain login.keychain
 
 
-PACKAGE=Electrum-MONA
+PACKAGE=Electrum
 
 
 . "$(dirname "$0")/../build_tools_util.sh"
@@ -59,7 +59,7 @@ function DoCodeSignMaybe { # ARGS: infoName fileOrDirName
     codesign -f -v $deep -s "$CODESIGN_CERT" $hardened_arg "$file" || fail "Could not code sign ${infoName}"
 }
 
-# note: no --dirty, as we have dirtied electrum_mona/locale/ ourselves.
+# note: no --dirty, as we have dirtied electrum/locale/ ourselves.
 VERSION=$(git describe --tags --always)
 
 DoCodeSignMaybe "app bundle" "dist/${PACKAGE}.app"
@@ -74,6 +74,6 @@ if [ ! -z "$CODESIGN_CERT" ]; then
 fi
 
 info "Creating .DMG"
-hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-mona-$VERSION.dmg || fail "Could not create .DMG"
+hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-$VERSION.dmg || fail "Could not create .DMG"
 
-DoCodeSignMaybe ".DMG" "dist/electrum-mona-${VERSION}.dmg"
+DoCodeSignMaybe ".DMG" "dist/electrum-${VERSION}.dmg"

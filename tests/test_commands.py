@@ -1,6 +1,7 @@
 import asyncio
 import binascii
 import datetime
+import io
 import os.path
 import unittest
 from unittest import mock
@@ -8,21 +9,21 @@ from decimal import Decimal
 from os import urandom
 import shutil
 
-import electrum_mona
-from electrum_mona.commands import Commands, eval_bool
-from electrum_mona import storage, wallet
-from electrum_mona.lnutil import RECEIVED, channel_id_from_funding_tx
-from electrum_mona.lnworker import RecvMPPResolution
-from electrum_mona.wallet import Abstract_Wallet
-from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED
-from electrum_mona.simple_config import SimpleConfig
-from electrum_mona.submarine_swaps import SwapOffer, SwapFees, NostrTransport
-from electrum_mona.transaction import Transaction, TxOutput, tx_from_any
-from electrum_mona.util import UserFacingException, NotEnoughFunds
-from electrum_mona.crypto import sha256
-from electrum_mona.bolt11 import decode_bolt11_invoice
-from electrum_mona.daemon import Daemon
-from electrum_mona import json_db
+import electrum
+from electrum.commands import Commands, eval_bool, get_parser
+from electrum import storage, wallet
+from electrum.lnutil import RECEIVED, channel_id_from_funding_tx
+from electrum.lnworker import RecvMPPResolution
+from electrum.wallet import Abstract_Wallet, CannotDoubleSpendTx
+from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum.simple_config import SimpleConfig
+from electrum.submarine_swaps import SwapOffer, SwapFees, NostrTransport
+from electrum.transaction import Transaction, TxOutput, tx_from_any
+from electrum.util import UserFacingException, NotEnoughFunds
+from electrum.crypto import sha256
+from electrum.bolt11 import decode_bolt11_invoice
+from electrum.daemon import Daemon
+from electrum import json_db
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest
@@ -68,6 +69,24 @@ class TestCommands(ElectrumTestCase):
         self.assertEqual("none", Commands._setconfig_normalize_value("somekey", "none"))
         self.assertEqual("", Commands._setconfig_normalize_value("somekey", ""))
         self.assertEqual("empty", Commands._setconfig_normalize_value("somekey", "empty"))
+
+    def test_cli_args_reject_malformed_values(self):
+        parser = get_parser()
+        # a malformed value is a usage error, not a traceback
+        for argv, error in (
+            (['add_request', 'help'], "invalid decimal value: 'help'"),
+            (['payto', 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx', 'abc'], "invalid decimal_or_max value: 'abc'"),
+            (['getmerkle', 'zz', '1'], "invalid txid value: 'zz'"),
+            (['create', '--encrypt_file', 'foo bar'], "invalid bool value: 'foo bar'"),
+        ):
+            with self.subTest(argv=argv):
+                with mock.patch('sys.stderr', new_callable=io.StringIO) as stderr, self.assertRaises(SystemExit) as ctx:
+                    parser.parse_args(argv)
+                self.assertEqual(2, ctx.exception.code)
+                self.assertIn(error, stderr.getvalue())
+        # valid values and the special keywords are still accepted
+        self.assertEqual('0.1', parser.parse_args(['add_request', '0.1']).amount)
+        self.assertEqual('!', parser.parse_args(['payto', 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx', '!']).amount)
 
     def test_eval_bool(self):
         self.assertFalse(eval_bool("False"))
@@ -117,14 +136,14 @@ class TestCommands(ElectrumTestCase):
             config=self.config)['wallet']
         cmds = Commands(config=self.config)
         # single address tests
-        with self.assertRaises(UserFacingException):
-            await cmds.getprivatekeys("asdasd", wallet=wallet)  # invalid addr, though might raise "not in wallet"
-        with self.assertRaises(UserFacingException):
+        with self.assertRaisesRegex(UserFacingException, "Invalid bitcoin address: asdasd"):
+            await cmds.getprivatekeys("asdasd", wallet=wallet)  # error must name the whole string, see #3676
+        with self.assertRaisesRegex(UserFacingException, "Address not in wallet: bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23"):
             await cmds.getprivatekeys("bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23", wallet=wallet)  # not in wallet
         self.assertEqual("p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL",
                          await cmds.getprivatekeys("bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw", wallet=wallet))
         # list of addresses tests
-        with self.assertRaises(UserFacingException):
+        with self.assertRaisesRegex(UserFacingException, "Invalid bitcoin address: asd$"):
             await cmds.getprivatekeys(['bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', 'asd'], wallet=wallet)
         self.assertEqual(['p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL', 'p2wpkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN'],
                          await cmds.getprivatekeys(['bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', 'bc1q9pzjpjq4nqx5ycnywekcmycqz0wjp2nq604y2n'], wallet=wallet))
@@ -136,14 +155,14 @@ class TestCommands(ElectrumTestCase):
             config=self.config)['wallet']
         cmds = Commands(config=self.config)
         # single address tests
-        with self.assertRaises(UserFacingException):
-            await cmds.getprivatekeys("asdasd", wallet=wallet)  # invalid addr, though might raise "not in wallet"
-        with self.assertRaises(UserFacingException):
+        with self.assertRaisesRegex(UserFacingException, "Invalid bitcoin address: asdasd"):
+            await cmds.getprivatekeys("asdasd", wallet=wallet)  # error must name the whole string, see #3676
+        with self.assertRaisesRegex(UserFacingException, "Address not in wallet: bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23"):
             await cmds.getprivatekeys("bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23", wallet=wallet)  # not in wallet
         self.assertEqual("p2wpkh:L15oxP24NMNAXxq5r2aom24pHPtt3Fet8ZutgL155Bad93GSubM2",
                          await cmds.getprivatekeys("bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af", wallet=wallet))
         # list of addresses tests
-        with self.assertRaises(UserFacingException):
+        with self.assertRaisesRegex(UserFacingException, "Invalid bitcoin address: asd$"):
             await cmds.getprivatekeys(['bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af', 'asd'], wallet=wallet)
         self.assertEqual(['p2wpkh:L15oxP24NMNAXxq5r2aom24pHPtt3Fet8ZutgL155Bad93GSubM2', 'p2wpkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN'],
                          await cmds.getprivatekeys(['bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af', 'bc1q9pzjpjq4nqx5ycnywekcmycqz0wjp2nq604y2n'], wallet=wallet))
@@ -152,7 +171,7 @@ class TestCommands(ElectrumTestCase):
         cmds = Commands(config=self.config)
         msg = "hello there"
         addr = "bc1qq2tmmcngng78nllq2pvrkchcdukemtj56uyue0"
-        sig = "H3MAD1Hg2wQPWm2s9mFAvuG60XrBflVTN2uQE7GseVq4IqvTpnQJaTRW0PRhs2qAlXq+jLHsn7RO0ry1JJJnuNU="
+        sig = "HznHvCsY//Zr5JvPIR3rN/RbCkttvrUs8Yt+vw+e1c29BLMSlcrN4+Y4Pq8e/UJuh2bDrUboTfsFhBJap+fPmNY="
         self.assertTrue(await cmds.verifymessage(addr, sig, msg))
         self.assertFalse(await cmds.verifymessage(addr, sig+"trailinggarbage", msg))
 
@@ -170,7 +189,7 @@ class TestCommands(ElectrumTestCase):
             await cmds.decrypt(pubkey, ciphertext+"trailinggarbage", wallet=wallet)
 
     def test_format_satoshis(self):
-        format_satoshis = electrum_mona.commands.format_satoshis
+        format_satoshis = electrum.commands.format_satoshis
         # input type is highly polymorphic:
         self.assertEqual(format_satoshis(None), None)
         self.assertEqual(format_satoshis(1), "0.00000001")
@@ -194,13 +213,13 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.config = SimpleConfig({'electrum_path': self.electrum_path})
         self.config.NETWORK_OFFLINE = True
         shutil.copytree(os.path.join(os.path.dirname(__file__), "fiat_fx_data"), os.path.join(self.electrum_path, "cache"))
-        self.config.FX_EXCHANGE = "CoinGecko"
+        self.config.FX_EXCHANGE = "BitFinex"
         self.config.FX_CURRENCY = "EUR"
-        self._default_default_timezone = electrum_mona.util.DEFAULT_TIMEZONE
-        electrum_mona.util.DEFAULT_TIMEZONE = datetime.timezone.utc
+        self._default_default_timezone = electrum.util.DEFAULT_TIMEZONE
+        electrum.util.DEFAULT_TIMEZONE = datetime.timezone.utc
 
     def tearDown(self):
-        electrum_mona.util.DEFAULT_TIMEZONE = self._default_default_timezone
+        electrum.util.DEFAULT_TIMEZONE = self._default_default_timezone
         super().tearDown()
 
     async def asyncSetUp(self):
@@ -383,6 +402,81 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.assertEqual("0200000000010115de15adc19661582a948876fbff49fa5deee24a158f1bec847d859cbd77e9e80100000000fdffffff04400d030000000000160014b450f5942ea3b0bb085e45f568fe49e72d3f28b0e09304000000000016001484770005f3783adcaafdece4e536dded3fbf798e12190f00000000001600141fb2ce607fffe4b193bbd11568cd7bf856053ce19ca5160000000000160014e8ea4cd62b6a65a2527124da12f5b7829dc1298f02473044022079570c62352d7c462ee50851d27f829f7ea5757d258b6b38a6b377a4910ba597022056653f1b15a9693ba790e89ebac60e33b7a1d8357e05cd3d7ecc1ae00e9ab4a8012102eed460ead0cbaa71ad52b70899acf4ea12682ab237207b045c5cf9c6d11c2bcfe6f31f00",
                          tx_str)
 
+    async def test_coin_control_commands(self):
+        wallet = restore_wallet_from_text__for_unittest(
+            'disagree rug lemon bean unaware square alone beach tennis exhibit fix mimic',
+            path=None,
+            config=self.config)['wallet']
+        # bootstrap wallet
+        funding_tx = Transaction('0200000000010165806607dd458280cb57bf64a16cf4be85d053145227b98c28932e953076b8e20000000000fdffffff02ac150700000000001600147e3ddfe6232e448a8390f3073c7a3b2044fd17eb102908000000000016001427fbe3707bc57e5bb63d6f15733ec88626d8188a02473044022049ce9efbab88808720aa563e2d9bc40226389ab459c4390ea3e89465665d593502206c1c7c30a2f640af1e463e5107ee4cfc0ee22664cfae3f2606a95303b54cdef80121026269e54d06f7070c1f967eb2874ba60de550dfc327a945c98eb773672d9411fd77181e00')
+        wallet.adb.receive_tx_callback(funding_tx, tx_height=TX_HEIGHT_UNCONFIRMED)
+        cmds = Commands(config=self.config)
+        addr = "tb1qyla7xurmc4l9hd3adu2hx0kgscndsxy2snf2gg"
+        coin = "ede61d39e501d65ccf34e6300da439419c43393f793bb9a8a4b06b2d0d80a8a0:1"
+        dest = "tb1qsyzgpwa0vg2940u5t6l97etuvedr5dejpf9tdy"
+        # listunspent: the single funding output
+        coins = await cmds.listunspent(wallet=wallet)
+        self.assertEqual([(f"{c['prevout_hash']}:{c['prevout_n']}", c['address'], c['value']) for c in coins],
+                         [(coin, addr, "0.005348")])
+        # a frozen coin is not spent
+        self.assertTrue(await cmds.freeze_utxo(coin, wallet=wallet))
+        with self.assertRaises(NotEnoughFunds):
+            await cmds.payto(destination=dest, amount="0.001", feerate=50, wallet=wallet)
+        self.assertTrue(await cmds.unfreeze_utxo(coin, wallet=wallet))
+        await cmds.payto(destination=dest, amount="0.001", feerate=50, wallet=wallet)
+        # the same for a frozen address
+        self.assertTrue(await cmds.freeze(addr, wallet=wallet))
+        with self.assertRaises(NotEnoughFunds):
+            await cmds.payto(destination=dest, amount="0.001", feerate=50, wallet=wallet)
+        self.assertTrue(await cmds.unfreeze(addr, wallet=wallet))
+        await cmds.payto(destination=dest, amount="0.001", feerate=50, wallet=wallet)
+
+    async def test_signmessage(self):
+        wallet = restore_wallet_from_text__for_unittest(
+            'disagree rug lemon bean unaware square alone beach tennis exhibit fix mimic',
+            path=None,
+            config=self.config)['wallet']
+        cmds = Commands(config=self.config)
+        addr = "tb1qyla7xurmc4l9hd3adu2hx0kgscndsxy2snf2gg"
+        sig = await cmds.signmessage(addr, "hello", wallet=wallet)
+        self.assertEqual("IEmhImhYOceJxpcdFc5NgtSEix3i9OYWPIY9uBO3WU08J4eWYby4oiMC1qS7ZgrbMidq4tKFGplUqZCAYeN2RX0=", sig)
+        self.assertTrue(await cmds.verifymessage(addr, sig, "hello"))
+        self.assertFalse(await cmds.verifymessage(addr, sig, "hello!"))
+        # on the CLI, surrounding whitespace is part of the message
+        sig2 = await cmds.signmessage(addr, " hello ", wallet=wallet)
+        self.assertNotEqual(sig, sig2)
+        self.assertTrue(await cmds.verifymessage(addr, sig2, " hello "))
+        self.assertFalse(await cmds.verifymessage(addr, sig, " hello "))
+        # only addresses of this wallet can sign
+        with self.assertRaises(UserFacingException):
+            await cmds.signmessage("tb1qsyzgpwa0vg2940u5t6l97etuvedr5dejpf9tdy", "hello", wallet=wallet)
+
+    async def test_listaddresses_and_setlabel(self):
+        wallet = restore_wallet_from_text__for_unittest(
+            'disagree rug lemon bean unaware square alone beach tennis exhibit fix mimic',
+            path=None,
+            config=self.config)['wallet']
+        # bootstrap wallet
+        funding_tx = Transaction('0200000000010165806607dd458280cb57bf64a16cf4be85d053145227b98c28932e953076b8e20000000000fdffffff02ac150700000000001600147e3ddfe6232e448a8390f3073c7a3b2044fd17eb102908000000000016001427fbe3707bc57e5bb63d6f15733ec88626d8188a02473044022049ce9efbab88808720aa563e2d9bc40226389ab459c4390ea3e89465665d593502206c1c7c30a2f640af1e463e5107ee4cfc0ee22664cfae3f2606a95303b54cdef80121026269e54d06f7070c1f967eb2874ba60de550dfc327a945c98eb773672d9411fd77181e00')
+        wallet.adb.receive_tx_callback(funding_tx, tx_height=TX_HEIGHT_UNCONFIRMED)
+        cmds = Commands(config=self.config)
+        addr = "tb1qyla7xurmc4l9hd3adu2hx0kgscndsxy2snf2gg"
+        self.assertEqual([addr], await cmds.listaddresses(funded=True, wallet=wallet))
+        self.assertEqual([(addr, "0.005348")], await cmds.listaddresses(funded=True, balance=True, wallet=wallet))
+        receiving = await cmds.listaddresses(receiving=True, wallet=wallet)
+        change = await cmds.listaddresses(change=True, wallet=wallet)
+        self.assertEqual(sorted(await cmds.listaddresses(wallet=wallet)), sorted(receiving + change))
+        self.assertFalse(set(receiving) & set(change))
+        self.assertNotIn(addr, await cmds.listaddresses(unused=True, wallet=wallet))
+        # frozen filter
+        self.assertEqual([], await cmds.listaddresses(frozen=True, wallet=wallet))
+        await cmds.freeze(addr, wallet=wallet)
+        self.assertEqual([addr], await cmds.listaddresses(frozen=True, wallet=wallet))
+        # setlabel
+        await cmds.setlabel(addr, "savings", wallet=wallet)
+        self.assertEqual("savings", wallet.get_label_for_address(addr))
+        self.assertEqual([(addr, "'savings'")], await cmds.listaddresses(funded=True, labels=True, wallet=wallet))
+
     async def test_signtransaction_without_wallet(self):
         cmds = Commands(config=self.config)
         unsigned_tx = "70736274ff0100a0020000000221d3645ba44f33fff6fe2666dc080279bc34b531c66888729712a80b204a32a10100000000fdffffffdd7f90d51acf98dc45ad7489316a983868c75e16bf14ffeb9eae01603a7b4da40100000000fdffffff02e8030000000000001976a9149a9ec2b35a7660c80dae38dd806fdf9b0fde68fd88ac74c11000000000001976a914f0dc093f7fb1b76cfd06610d5359d6595676cc2b88aca79b1d00000100e102000000018ba8cf9f0ff0b44c389e4a1cd25c0770636d95ccef161e313542647d435a5fd0000000006a4730440220373b3989905177f2e36d7e3d02b967d03092747fe7bbd3ba7b2c24623a88538c02207be79ee1d981060c2be6783f4946ce1bda1f64671b349ef14a4a6fecc047a71e0121030de43c5ed4c6272d20ce3becf3fb7afd5c3ccfb5d58ddfdf3047981e0b005e0dfdffffff02c0010700000000001976a9141cd3eb65bce2cae9f54544b65e46b3ad1f0b187288ac40420f00000000001976a914f0dc093f7fb1b76cfd06610d5359d6595676cc2b88ac979b1d00000100e102000000014e39236158716e91b0b2170ebe9d6b359d139e9ebfff163f2bafd0bec9890d04000000006a473044022070340deb95ca25ef86c4c7a9539b5c8f7b8351941635450311f914cd9c2f45ea02203fa7576e032ab5ae4763c78f5c2124573213c956286fd766582d9462515dc6540121033f6737e40a3a6087bc58bc5b82b427f9ed26d710b8fe2f70bfdd3d62abebcf74fdffffff02e8030000000000001976a91490350959750b3b38e451df16bd5957b7649bf5d288acac840100000000001976a914f0dc093f7fb1b76cfd06610d5359d6595676cc2b88ac979b1d00000000"
@@ -439,6 +533,45 @@ class TestCommandsTestnet(ElectrumTestCase):
         # test "from_coins" arg
         self.assertEqual("02000000000101b9723dfc69af058ef6613539a000d2cd098a2c8a74e802b6d8739db708ba8c9a0100000000fdffffff02a00f00000000000016001429e1fd187f0cac845946ae1b11dc136c536bfc0f84b2000000000000160014100611bcb3aee7aad176936cf4ed56ade03027aa0247304402203aa63539b673a3bd70a76482b17f35f8843974fab28f84143a00450789010bc40220779c2ce2d0217f973f1f6c9f718e19fc7ebd14dd8821a962f002437cda3082ec012102ee3f00141178006c78b0b458aab21588388335078c655459afe544211f15aee000000000",
                          await cmds.bumpfee(tx=orig_rawtx, new_fee_rate='1.6', from_coins="9a8cba08b79d73d8b602e8748a2c8a09cdd200a0393561f68e05af69fc3d72b9:1", wallet=wallet))
+
+    async def test_dscancel(self):
+        wallet = restore_wallet_from_text__for_unittest(
+            'right nominee cheese afford exotic pilot mask illness rug fringe degree pottery',
+            path=None,
+            config=self.config)['wallet']  # type: Abstract_Wallet
+
+        funding_tx = Transaction("02000000000102789e8aa8caa79d87241ff9df0e3fd757a07c85a30195d76e8efced1d57c56b670000000000fdffffff7ee2b6abd52b332f797718ae582f8d3b979b83b1799e0a3bfb2c90c6e070c29e0100000000fdffffff020820000000000000160014c0eb720c93a61615d2d66542d381be8943ca553950c3000000000000160014d7dbd0196a2cbd76420f14a19377096cf6cddb75024730440220485b491ad8d3ce3b4da034a851882da84a06ec9800edff0d3fd6aa42eeba3b440220359ea85d32a05932ac417125e133fa54e54e7e9cd20ebc54b883576b8603fd65012103860f1fbf8a482b9d35d7d4d04be8fb33d856a514117cd8b73e372d36895feec60247304402206c2ca56cc030853fa59b4b3cb293f69a3378ead0f10cb76f640f8c2888773461022079b7055d0f6af6952a48e5b97218015b0723462d667765c142b41bd35e3d9c0a01210359e303f57647094a668d69e8ff0bd46c356d00aa7da6dc533c438e71c057f0793e721f00")
+        wallet.adb.receive_tx_callback(funding_tx, tx_height=TX_HEIGHT_UNCONFIRMED)
+
+        cmds = Commands(config=self.config)
+        orig_rawtx = "02000000000101b9723dfc69af058ef6613539a000d2cd098a2c8a74e802b6d8739db708ba8c9a0100000000fdffffff02a00f00000000000016001429e1fd187f0cac845946ae1b11dc136c536bfc0fe8b2000000000000160014100611bcb3aee7aad176936cf4ed56ade03027aa02473044022063c05e2347f16251922830ccc757231247b3c2970c225f988e9204844a1ab7b802204652d2c4816707e3d3bea2609b83b079001a435bad2a99cc2e730f276d07070c012102ee3f00141178006c78b0b458aab21588388335078c655459afe544211f15aee050721f00"
+        orig_tx = tx_from_any(orig_rawtx)
+        orig_txid = orig_tx.txid()
+        # txid of a tx not in the wallet db
+        with self.assertRaises(UserFacingException) as ctx:
+            await cmds.dscancel(tx=orig_txid, new_fee_rate='1.6', wallet=wallet)
+        self.assertIn("Transaction not in wallet", str(ctx.exception))
+        # a raw tx the wallet does not know as unconfirmed cannot be cancelled
+        with self.assertRaises(UserFacingException) as ctx:
+            await cmds.dscancel(tx=orig_rawtx, new_fee_rate='1.6', wallet=wallet)
+        self.assertIn("cannot be cancelled", str(ctx.exception))
+        wallet.adb.receive_tx_callback(orig_tx, tx_height=TX_HEIGHT_UNCONFIRMED)
+        # the replacement spends the same input and pays everything back to the wallet
+        self.assertEqual("02000000000101b9723dfc69af058ef6613539a000d2cd098a2c8a74e802b6d8739db708ba8c9a0100000000fdffffff011ac2000000000000160014100611bcb3aee7aad176936cf4ed56ade03027aa0247304402204c3c74226c00f49d240702d172864adead02f7c91c224a05e842d4eb9fbef65002206b16176b08e372f0b114a1495a94bf8867554ebad0864b8b5a71e4dff0e77673012102ee3f00141178006c78b0b458aab21588388335078c655459afe544211f15aee000000000",
+                         await cmds.dscancel(tx=orig_rawtx, new_fee_rate='1.6', wallet=wallet))
+        # unsigned: returns a PSBT that spends the same input
+        psbt = tx_from_any(await cmds.dscancel(tx=orig_rawtx, new_fee_rate='1.6', unsigned=True, wallet=wallet))
+        self.assertEqual([txin.prevout.to_str() for txin in orig_tx.inputs()],
+                         [txin.prevout.to_str() for txin in psbt.inputs()])
+        self.assertEqual(1, len(psbt.outputs()))
+        self.assertTrue(wallet.is_mine(psbt.outputs()[0].address))
+        # new fee rate must be higher than the old one
+        with self.assertRaises(CannotDoubleSpendTx):
+            await cmds.dscancel(tx=orig_rawtx, new_fee_rate='1', wallet=wallet)
+        # txid as first arg
+        self.assertEqual("02000000000101b9723dfc69af058ef6613539a000d2cd098a2c8a74e802b6d8739db708ba8c9a0100000000fdffffff011ac2000000000000160014100611bcb3aee7aad176936cf4ed56ade03027aa0247304402204c3c74226c00f49d240702d172864adead02f7c91c224a05e842d4eb9fbef65002206b16176b08e372f0b114a1495a94bf8867554ebad0864b8b5a71e4dff0e77673012102ee3f00141178006c78b0b458aab21588388335078c655459afe544211f15aee000000000",
+                         await cmds.dscancel(tx=orig_txid, new_fee_rate='1.6', wallet=wallet))
+        wallet.adb.remove_transaction(orig_txid)  # undo side-effect on wallet
 
     async def test_importprivkey(self):
         wallet = restore_wallet_from_text__for_unittest(
@@ -733,7 +866,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         assert await cmds.export_lightning_preimage(payment_hash=payment_hash.hex(), wallet=w) == preimage.hex()
         assert await cmds.export_lightning_preimage(payment_hash=os.urandom(32).hex(), wallet=w) is None
 
-    @mock.patch('electrum_mona.commands.LN_P2P_NETWORK_TIMEOUT', 0.001)
+    @mock.patch('electrum.commands.LN_P2P_NETWORK_TIMEOUT', 0.001)
     async def test_add_peer(self, *mock_args):
         w = restore_wallet_from_text__for_unittest(
             'disagree rug lemon bean unaware square alone beach tennis exhibit fix mimic',

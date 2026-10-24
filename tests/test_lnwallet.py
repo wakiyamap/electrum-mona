@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 import asyncio
@@ -8,33 +9,35 @@ from typing import Callable, Optional, Sequence
 
 import electrum_ecc as ecc
 
-from electrum_mona.address_synchronizer import TX_HEIGHT_LOCAL
-from electrum_mona import bitcoin, keystore
-from electrum_mona.bitcoin import COIN
-import electrum_mona.trampoline
-from electrum_mona.channel_db import UpdateStatus
-from electrum_mona.lnutil import (
+from electrum.address_synchronizer import TX_HEIGHT_LOCAL
+from electrum import bitcoin, keystore
+from electrum.bitcoin import COIN
+import electrum.trampoline
+from electrum.channel_db import UpdateStatus
+from electrum.lnutil import (
     RECEIVED, SENT, MIN_FINAL_CLTV_DELTA_ACCEPTED, serialize_htlc_key, LnFeatures, HTLCOwner, PaymentFailure,
-    LOCAL, REMOTE, ImportedChannelBackupStorage, make_commitment_output_to_anchor_address,
+    LOCAL, REMOTE, ImportedChannelBackupStorage, make_commitment_output_to_anchor_address, UpdateAddHtlc,
+    NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE,
 )
-from electrum_mona.logging import console_stderr_handler
-from electrum_mona.lnmsg import decode_msg
-from electrum_mona.lnrouter import RouteEdge
-from electrum_mona.bolt11 import encode_bolt11_invoice, BOLT11Addr
-from electrum_mona.lntransport import LNPeerAddr
-from electrum_mona.invoices import LN_EXPIRY_NEVER, PR_UNPAID, PR_INFLIGHT, Invoice
-from electrum_mona.lnpeer import Peer
-from electrum_mona.lnchannel import Channel, ChannelBackup, ChannelState
-from electrum_mona.lnonion import OnionPacket, OnionRoutingFailure, OnionFailureCode
-from electrum_mona.mpp_split import SplitConfig, SplitConfigRating
-from electrum_mona.crypto import sha256, pw_encode_with_version_and_mac
-from electrum_mona.simple_config import SimpleConfig
-from electrum_mona.fee_policy import FEE_ETA_TARGETS
-from electrum_mona.transaction import Transaction, TxOutpoint, BCDataStream
-from electrum_mona.util import bfh, UserFacingException
-from electrum_mona.storage import WalletStorage
-from electrum_mona.wallet import Abstract_Wallet
-from electrum_mona.wallet_db import WalletDB
+from electrum.logging import console_stderr_handler
+from electrum.lnmsg import decode_msg
+from electrum.lnrouter import RouteEdge
+from electrum.bolt11 import encode_bolt11_invoice, BOLT11Addr
+from electrum.lntransport import LNPeerAddr
+from electrum.invoices import LN_EXPIRY_NEVER, PR_UNPAID, PR_INFLIGHT, Invoice
+from electrum.lnpeer import Peer
+from electrum.lnchannel import Channel, ChannelBackup, ChannelState
+from electrum.lnonion import (
+    OnionPacket, OnionRoutingFailure, OnionFailureCode, ProcessedOnionPacket, OnionHopsDataSingle,
+)
+from electrum.mpp_split import SplitConfig, SplitConfigRating
+from electrum.crypto import sha256, pw_encode_with_version_and_mac
+from electrum.simple_config import SimpleConfig
+from electrum.transaction import Transaction, TxOutpoint, BCDataStream
+from electrum.util import bfh, UserFacingException
+from electrum.storage import WalletStorage
+from electrum.wallet import Abstract_Wallet
+from electrum.wallet_db import WalletDB
 
 from . import ElectrumTestCase, lnhelpers
 from .lnhelpers import create_test_channels, find_free_port
@@ -141,14 +144,14 @@ class TestLNWallet(ElectrumTestCase):
         wallet._add_channel(chan_r)
 
         # only trampoline_peer is a known trampoline forwarder
-        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             'trampoline_peer': LNPeerAddr(
                 host="127.0.0.1",
                 port=9735,
                 pubkey=trampoline_pubkey,
             ),
         }
-        self.addCleanup(lambda: electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS.clear())
+        self.addCleanup(lambda: electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS.clear())
 
         amount_msat = 100_000
 
@@ -161,7 +164,7 @@ class TestLNWallet(ElectrumTestCase):
         )
 
         lnaddr, _ = wallet.get_bolt11_invoice(payment_info=pi, message='test', fallback_address=None)
-        hint_node_ids = {route[0][0] for route in lnaddr.get_routing_info('r')}
+        hint_node_ids = {route[0][0] for route in lnaddr.get_routing_info()}
         self.assertEqual(hint_node_ids, {trampoline_pubkey, regular_pubkey})
 
         # trampoline feature should not be set if we use trampoline but one peer is not a trampoline
@@ -177,14 +180,14 @@ class TestLNWallet(ElectrumTestCase):
 
         wallet.clear_invoices_cache()
         lnaddr, _ = wallet.get_bolt11_invoice(payment_info=pi, message='test', fallback_address=None)
-        hint_node_ids = {route[0][0] for route in lnaddr.get_routing_info('r')}
+        hint_node_ids = {route[0][0] for route in lnaddr.get_routing_info()}
         self.assertEqual(hint_node_ids, {trampoline_pubkey, regular_pubkey})
 
         wallet.uses_trampoline = old_check
         self.assertFalse(wallet.uses_trampoline())
 
         # all peers trampoline: we signal trampoline support, even with trampoline disabled
-        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS['regular_peer'] = LNPeerAddr(
+        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS['regular_peer'] = LNPeerAddr(
             host="127.0.0.1",
             port=9735,
             pubkey=regular_pubkey,
@@ -199,14 +202,14 @@ class TestLNWallet(ElectrumTestCase):
 
         wallet.clear_invoices_cache()
         lnaddr2, _ = wallet.get_bolt11_invoice(payment_info=pi2, message='test', fallback_address=None)
-        hint_node_ids2 = {route[0][0] for route in lnaddr2.get_routing_info('r')}
+        hint_node_ids2 = {route[0][0] for route in lnaddr2.get_routing_info()}
         self.assertEqual(hint_node_ids2, {trampoline_pubkey, regular_pubkey})
 
         # assert only trampoline peers are included in r_tags if the invoice_features signal trampoline
-        del electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS['regular_peer']
+        del electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS['regular_peer']
         wallet.clear_invoices_cache()
         lnaddr3, _ = wallet.get_bolt11_invoice(payment_info=pi2, message='test', fallback_address=None)
-        hint_node_ids3 = {route[0][0] for route in lnaddr3.get_routing_info('r')}
+        hint_node_ids3 = {route[0][0] for route in lnaddr3.get_routing_info()}
         self.assertEqual(hint_node_ids3, {trampoline_pubkey})
 
     async def test_open_channel_just_in_time_success(self):
@@ -318,7 +321,7 @@ class TestLNWallet(ElectrumTestCase):
 
         wallet._cleanup_failed_jit_channel = mock.AsyncMock()
 
-        with mock.patch('electrum_mona.lnworker.LN_P2P_NETWORK_TIMEOUT', 0.01):
+        with mock.patch('electrum.lnworker.LN_P2P_NETWORK_TIMEOUT', 0.01):
             with self.assertRaises(OnionRoutingFailure):
                 await wallet.open_channel_just_in_time(
                     next_peer=next_peer,
@@ -350,8 +353,8 @@ class TestLNWallet(ElectrumTestCase):
 
         wallet._cleanup_failed_jit_channel = mock.AsyncMock()
 
-        with mock.patch('electrum_mona.lnworker.ZEROCONF_TIMEOUT', 0.01), \
-             mock.patch('electrum_mona.lnworker.asyncio.sleep', new_callable=mock.AsyncMock):
+        with mock.patch('electrum.lnworker.ZEROCONF_TIMEOUT', 0.01), \
+             mock.patch('electrum.lnworker.asyncio.sleep', new_callable=mock.AsyncMock):
              with self.assertRaises(OnionRoutingFailure):
                 await wallet.open_channel_just_in_time(
                     next_peer=next_peer,
@@ -378,6 +381,128 @@ class TestLNWallet(ElectrumTestCase):
                 payment_hash=os.urandom(32),
                 next_onion=mock.Mock(spec=OnionPacket)
             )
+
+    async def test_maybe_forward_htlc_jit_checks_incoming_htlc(self):
+        """before opening a just-in-time channel, the incoming htlc must pass the same
+        amount and cltv checks as for a regular forward"""
+        wallet = self.lnwallet_anchors
+        wallet.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS = True
+        wallet.lnpeermgr.features |= LnFeatures.OPTION_ZEROCONF_OPT
+        next_peer = mock.Mock(spec=Peer)
+        next_peer.accepts_zeroconf.return_value = True
+        next_peer.channels = {}
+        wallet.get_peer_by_static_jit_scid_alias = lambda scid: next_peer
+        wallet.open_channel_just_in_time = mock.AsyncMock(return_value='htlc_key')
+        height = wallet.network.get_local_height()
+        next_amount_msat = 1_000_000
+        next_cltv_abs = height + 1000
+
+        async def forward(*, amount_msat: int, cltv_abs: int, next_cltv_abs: int = next_cltv_abs) -> str:
+            htlc = UpdateAddHtlc(
+                amount_msat=amount_msat,
+                payment_hash=os.urandom(32),
+                cltv_abs=cltv_abs,
+                htlc_id=0,
+                timestamp=int(time.time()))
+            processed_onion = ProcessedOnionPacket(
+                are_we_final=False,
+                hop_data=OnionHopsDataSingle(payload={
+                    'short_channel_id': {'short_channel_id': os.urandom(8)},
+                    'amt_to_forward': {'amt_to_forward': next_amount_msat},
+                    'outgoing_cltv_value': {'outgoing_cltv_value': next_cltv_abs},
+                }),
+                next_packet=mock.Mock(spec=OnionPacket),
+                trampoline_onion_packet=None)
+            return await wallet._maybe_forward_htlc(
+                incoming_chan=mock.Mock(spec=Channel),
+                htlc=htlc,
+                processed_onion=processed_onion)
+
+        with self.subTest(msg="incoming amount lower than forwarded amount"):
+            with self.assertRaises(OnionRoutingFailure) as ctx:
+                await forward(amount_msat=next_amount_msat - 1, cltv_abs=next_cltv_abs + 144)
+            self.assertEqual(ctx.exception.code, OnionFailureCode.FEE_INSUFFICIENT)
+        with self.subTest(msg="incoming cltv delta too small"):
+            with self.assertRaises(OnionRoutingFailure) as ctx:
+                await forward(amount_msat=next_amount_msat, cltv_abs=next_cltv_abs + 143)
+            self.assertEqual(ctx.exception.code, OnionFailureCode.INCORRECT_CLTV_EXPIRY)
+        with self.subTest(msg="incoming htlc expires too soon"):
+            with self.assertRaises(OnionRoutingFailure) as ctx:
+                await forward(
+                    amount_msat=next_amount_msat,
+                    cltv_abs=height + MIN_FINAL_CLTV_DELTA_ACCEPTED,
+                    next_cltv_abs=height + MIN_FINAL_CLTV_DELTA_ACCEPTED - 144)
+            self.assertEqual(ctx.exception.code, OnionFailureCode.EXPIRY_TOO_SOON)
+            self.assertEqual(ctx.exception.data, b'\x00\x00')  # empty channel_update
+        wallet.open_channel_just_in_time.assert_not_called()
+
+        with self.subTest(msg="valid htlc opens the channel"):
+            htlc_key = await forward(amount_msat=next_amount_msat, cltv_abs=next_cltv_abs + 144)
+            self.assertEqual(htlc_key, 'htlc_key')
+            wallet.open_channel_just_in_time.assert_awaited_once()
+            kwargs = wallet.open_channel_just_in_time.call_args.kwargs
+            self.assertEqual(kwargs['next_amount_msat_htlc'], next_amount_msat)
+            self.assertEqual(kwargs['next_cltv_abs'], next_cltv_abs)
+
+    async def test_maybe_forward_trampoline_jit_checks_outgoing_cltv(self):
+        """the outgoing cltv of a trampoline forward to a just-in-time channel is chosen by the sender.
+        It must be checked before creating the onion, so that the incoming htlcs get failed"""
+        wallet = self.lnwallet_anchors
+        wallet.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS = True
+        wallet.config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS = True
+        wallet.lnpeermgr.features |= LnFeatures.OPTION_ZEROCONF_OPT
+        next_node_id = ecc.ECPrivkey.generate_random_key().get_public_key_bytes()
+        next_peer = mock.Mock(spec=Peer)
+        next_peer.pubkey = next_node_id
+        next_peer.accepts_zeroconf.return_value = True
+        next_peer.channels = {}
+        wallet.lnpeermgr.get_peer_by_pubkey = lambda pubkey: next_peer if pubkey == next_node_id else None
+        wallet.open_channel_just_in_time = mock.AsyncMock(return_value='htlc_key')
+        height = wallet.network.get_local_height()
+        amount_msat = 1_000_000
+
+        async def forward(*, out_cltv_abs: int, cltv_delta: int = 576) -> None:
+            trampoline_onion = ProcessedOnionPacket(
+                are_we_final=False,
+                hop_data=OnionHopsDataSingle(payload={
+                    'outgoing_node_id': {'outgoing_node_id': next_node_id},
+                    'amt_to_forward': {'amt_to_forward': amount_msat},
+                    'outgoing_cltv_value': {'outgoing_cltv_value': out_cltv_abs},
+                    'invoice_features': {'invoice_features': 0},
+                    'invoice_routing_info': {'invoice_routing_info': b''},
+                }),
+                next_packet=mock.Mock(spec=OnionPacket),
+                trampoline_onion_packet=None)
+            await wallet._maybe_forward_trampoline(
+                payment_hash=os.urandom(32),
+                closest_inc_cltv_abs=out_cltv_abs + cltv_delta,
+                total_msat=amount_msat,
+                any_trampoline_onion=trampoline_onion,
+                fw_payment_key='fw_payment_key')
+
+        with self.subTest(msg="outgoing htlc already expired"):
+            with self.assertRaises(OnionRoutingFailure) as ctx:
+                await forward(out_cltv_abs=height - 1)
+            self.assertEqual(ctx.exception.code, OnionFailureCode.TRAMPOLINE_EXPIRY_TOO_SOON)
+        with self.subTest(msg="outgoing htlc expires too soon for the recipient"):
+            with self.assertRaises(OnionRoutingFailure) as ctx:
+                await forward(out_cltv_abs=height + MIN_FINAL_CLTV_DELTA_ACCEPTED - 2)
+            self.assertEqual(ctx.exception.code, OnionFailureCode.TRAMPOLINE_EXPIRY_TOO_SOON)
+        with self.subTest(msg="outgoing htlc expires too far into the future"):
+            with self.assertRaises(OnionRoutingFailure) as ctx:
+                await forward(out_cltv_abs=height + NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE)
+            self.assertEqual(ctx.exception.code, OnionFailureCode.EXPIRY_TOO_FAR)
+        with self.subTest(msg="incoming cltv delta too small"):
+            with self.assertRaises(OnionRoutingFailure) as ctx:
+                await forward(out_cltv_abs=height + 1000, cltv_delta=144)
+            self.assertEqual(ctx.exception.code, OnionFailureCode.TRAMPOLINE_EXPIRY_TOO_SOON)
+        wallet.open_channel_just_in_time.assert_not_called()
+
+        with self.subTest(msg="latest accepted outgoing cltv opens the channel"):
+            await forward(out_cltv_abs=height + NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE - 1)
+            wallet.open_channel_just_in_time.assert_awaited_once()
+            kwargs = wallet.open_channel_just_in_time.call_args.kwargs
+            self.assertEqual(kwargs['next_cltv_abs'], height + NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE)
 
     async def test_cleanup_failed_jit_channel(self):
         wallet = self.lnwallet_anchors
@@ -639,19 +764,8 @@ class TestChannelBackup(ToyServerTestCase):
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        # Electrum-MONA: the feerate floors (FEERATE_DEFAULT_RELAY, FEERATE_PER_KW_MIN_RELAY_LIGHTNING) are 100x
-        # upstream's, so scale the feerates of the toy network too:
-        # - its fee estimates. Otherwise a commitment tx would always pay more than the target feerate,
-        #   and its anchors would never get claimed.
-        # - the min relay feerate of the server, which is also the increment it requires for mempool
-        #   replacement. Otherwise replacements that upstream's tests expect to get rejected are accepted,
-        #   and the other wallet can then fail to fetch the replaced tx ("unknown txid").
-        self.server.min_relay_feerate = 100 * self.server.min_relay_feerate
         self.alice_instance = await self.create_instance("alice")
         self.bob_instance = await self.create_instance("bob")
-        for instance in (self.alice_instance, self.bob_instance):
-            for target in FEE_ETA_TARGETS[:-1]:
-                instance.network.fee_estimates.set_data(target, 100 * 50_000 // target)
         self.bob_instance.config.LIGHTNING_LISTEN = f"127.0.0.1:{find_free_port()}"
         self.bob = self.create_wallet("bob", instance=self.bob_instance)
         await self.wait_until(lambda: self.bob.lnworker.lnpeermgr.listen_server is not None)
@@ -937,10 +1051,10 @@ class TestChannelBackup(ToyServerTestCase):
 
         # the onchain backup only contains a node id prefix: bob must be findable as a hardcoded node
         bob_host, bob_port = self.bob_instance.config.LIGHTNING_LISTEN.rsplit(':', 1)
-        electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             'bob': LNPeerAddr(host=bob_host, port=int(bob_port), pubkey=self.bob.lnworker.node_keypair.pubkey),
         }
-        self.addCleanup(lambda: electrum_mona.trampoline._TRAMPOLINE_NODES_UNITTESTS.clear())
+        self.addCleanup(lambda: electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS.clear())
         await alice.lnworker.request_force_close(chan_id)
 
         # bob force-closes with his own ctx, and alice claims her balance out of it
@@ -982,3 +1096,27 @@ class TestChannelBackup(ToyServerTestCase):
         # now try importing an older version again, this should not work
         with self.assertRaises(UserFacingException):
             alice.lnworker.import_channel_backup(backup_v2)
+
+    async def test_channel_backup_with_same_funding_address_as_channel(self):
+        """
+        We restore from seed.
+        The remote peer reuses their funding_pubkey to open a channel to us.
+        We import a channel backup of a different channel using the same funding_pubkey.
+        LNWatcher should watch both channels."""
+        alice = self.create_deterministic_wallet(self.alice_instance)
+        chan = await self.fund_and_open_channel(alice, anchors=True)
+        lnwatcher = alice.lnworker.lnwatcher
+
+        # alice imports a backup of another channel, with the same funding address
+        backup = alice.lnworker.export_channel_backup(chan.channel_id)
+        cb_storage = ImportedChannelBackupStorage.from_encrypted_str(backup, password=alice.get_fingerprint())
+        cb_storage = dataclasses.replace(cb_storage, funding_txid=os.urandom(32).hex())
+        alice.lnworker.import_channel_backup('channel_backup:' + pw_encode_with_version_and_mac(cb_storage.to_bytes(), alice.get_fingerprint()))
+        cb = alice.lnworker.channel_backups[cb_storage.channel_id()]
+        self.assertEqual(chan.get_funding_address(), cb.get_funding_address())
+        self.assertEqual({chan.funding_outpoint.to_str(), cb.funding_outpoint.to_str()}, set(lnwatcher.callbacks))
+
+        # wallet load
+        lnwatcher.callbacks.clear()
+        alice.lnworker.subscribe_to_channels()
+        self.assertEqual({chan.funding_outpoint.to_str(), cb.funding_outpoint.to_str()}, set(lnwatcher.callbacks))

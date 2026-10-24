@@ -25,7 +25,7 @@ PY_VER_MAJOR="3.12"  # as it appears in fs paths
 PKG2APPIMAGE_COMMIT="a9c85b7e61a3a883f4a35c41c5decb5af88b6b5d"
 
 VERSION=$(git describe --tags --dirty --always)
-APPIMAGE="$DISTDIR/electrum-mona-$VERSION-x86_64.AppImage"
+APPIMAGE="$DISTDIR/electrum-$VERSION-x86_64.AppImage"
 
 rm -rf "$BUILDDIR"
 mkdir -p "$APPDIR" "$CACHEDIR" "$PIP_CACHE_DIR" "$DISTDIR" "$DLL_TARGET_DIR"
@@ -89,13 +89,13 @@ fi
 cp -f "$DLL_TARGET_DIR"/libsecp256k1.so.* "$APPDIR/usr/lib/" || fail "Could not copy libsecp to its destination"
 
 
-if [ -f "$DLL_TARGET_DIR/libzbar.so.0" ]; then
-    info "libzbar already built, skipping"
+if [ -f "$DLL_TARGET_DIR/libZXing.so" ]; then
+    info "zxing-cpp already built, skipping"
 else
-    # note: could instead just use the libzbar0 pkg from debian/apt, but that is too old and missing fixes for CVE-2023-40889
-    "$CONTRIB"/make_zbar.sh || fail "Could not build zbar"
+    # Bullseye's default GCC lacks the required C++20 support.
+    CC=clang-16 CXX=clang++-16 "$CONTRIB"/make_zxing.sh || fail "Could not build zxing-cpp"
 fi
-cp -f "$DLL_TARGET_DIR/libzbar.so.0" "$APPDIR/usr/lib/" || fail "Could not copy libzbar to its destination"
+cp -f "$DLL_TARGET_DIR/libZXing.so" "$APPDIR/usr/lib/" || fail "Could not copy zxing-cpp to its destination"
 
 
 appdir_python() {
@@ -118,7 +118,7 @@ info "preparing electrum-locale."
 (
     "$CONTRIB/locale/build_cleanlocale.sh"
     # we want the binary to have only compiled (.mo) locale files; not source (.po) files
-    rm -r "$PROJECT_ROOT/electrum_mona/locale/locale"/*/electrum.po
+    rm -r "$PROJECT_ROOT/electrum/locale/locale"/*/electrum.po
 )
 
 
@@ -145,7 +145,7 @@ export PROPCACHE_NO_EXTENSIONS=1
 export ELECTRUM_ECC_DONT_COMPILE=1
 
 info "installing electrum and its dependencies."
-CFLAGS="$LYRA2RE2_HASH_CFLAGS" "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
+"$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements.txt"
 "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --only-binary PyQt6,PyQt6-Qt6,cryptography --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-binaries.txt"
@@ -160,8 +160,8 @@ CFLAGS="$LYRA2RE2_HASH_CFLAGS" "$python" -m pip install --no-build-isolation --n
 
 
 info "desktop integration."
-cp "$PROJECT_ROOT/electrum-mona.desktop" "$APPDIR/electrum-mona.desktop"
-cp "$PROJECT_ROOT/electrum_mona/gui/icons/electrum.png" "$APPDIR/electrum.png"
+cp "$PROJECT_ROOT/electrum.desktop" "$APPDIR/electrum.desktop"
+cp "$PROJECT_ROOT/electrum/gui/icons/electrum.png" "$APPDIR/electrum.png"
 
 
 # add launcher
@@ -232,13 +232,19 @@ done
 rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/{qml,libexec}
 rm -rf "$PYDIR"/site-packages/PyQt6/{pyrcc*.so,pylupdate*.so,uic}
 rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/plugins/{bearer,gamepads,geometryloaders,geoservices,playlistformats,position,renderplugins,sceneparsers,sensors,sqldrivers,texttospeech,webview}
-for component in Bluetooth Concurrent Designer Help Location NetworkAuth Nfc Positioning PositioningQuick Qml Quick Sensors SerialPort Sql Test Web Xml Labs ShaderTools SpatialAudio ; do
+for component in Bluetooth Designer Help Location NetworkAuth Nfc Positioning PositioningQuick Sensors SerialPort Sql Test Web Xml Labs ShaderTools SpatialAudio ; do
     rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/lib/libQt6${component}*
     rm -rf "$PYDIR"/site-packages/PyQt6/Qt${component}*
     rm -rf "$PYDIR"/site-packages/PyQt6/bindings/Qt${component}*
 done
-for component in Qml Quick ; do
-    rm -rf "$PYDIR"/site-packages/PyQt6/Qt6/lib/libQt6*${component}.so*
+# Qt's FFmpeg backend links to Quick/Qml; Qt 6.10's Multimedia also links to Concurrent.
+# https://github.com/qt/qtmultimedia/blob/v6.9.2/src/plugins/multimedia/ffmpeg/CMakeLists.txt#L199-L203
+# https://github.com/qt/qtdeclarative/blob/v6.9.2/src/quick/CMakeLists.txt#L243-L248
+# https://github.com/qt/qtmultimedia/blob/v6.10.0/src/multimedia/CMakeLists.txt#L124-L128
+# Keep those native libraries even though the desktop GUI does not import the bindings.
+for component in Concurrent Qml Quick ; do
+    rm -rf "$PYDIR"/site-packages/PyQt6/Qt${component}*
+    rm -rf "$PYDIR"/site-packages/PyQt6/bindings/Qt${component}*
 done
 rm -rf "$PYDIR"/site-packages/PyQt6/Qt.so
 

@@ -1,12 +1,10 @@
 name: regtest
 
 on:
-  # TODO monacoin: only manual runs for now. The regtest setup was ported from the old CI of Electrum-MONA
-  #                (monacoind instead of bitcoind), but it has not been run against this version yet.
-  #push:
-  #  branches: [master]
-  #  tags: ['*']
-  #pull_request:
+  push:
+    branches: [master]
+    tags: ['*']
+  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -37,41 +35,43 @@ jobs:
           python-version: "3.10"
           cache: 'pip'
           cache-dependency-path: contrib/requirements/requirements.txt
-      - name: Determine monacoind version
+      - name: Determine latest bitcoind version
         id: bitcoind-version
         run: |
-          BITCOIND_VERSION="0.17.1"
+          BITCOIND_VERSION=$(curl https://bitcoincore.org/en/download/ | grep -E -i --only-matching 'Latest version: [0-9\.]+' | grep -E --only-matching '[0-9\.]+')
+          if [ -z "$BITCOIND_VERSION" ]; then
+            echo "Failed to detect bitcoind version from bitcoincore.org" >&2
+            exit 1
+          fi
+          echo "Detected bitcoind version: $BITCOIND_VERSION"
           echo "version=$BITCOIND_VERSION" >> "$GITHUB_OUTPUT"
       - name: Cache bitcoind binary
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: /tmp/bitcoind
-          key: monacoind-ubuntu-24.04-${{ steps.bitcoind-version.outputs.version }}
+          key: bitcoind-ubuntu-24.04-${{ steps.bitcoind-version.outputs.version }}
       - name: Install OS deps
         run: |
           sudo apt-get update
           sudo apt-get -y install curl jq bc automake libtool
       - name: Install Electrum and ElectrumX
-        # installs e-x some commits after 1.18.0 tag
+        # installs e-x 2.0.0 tag
         # uses --ignore-installed to ignore installed system installed attrs
-        env:
-          # needed to compile lyra2re2_hash correctly, see README.md
-          CFLAGS: "-fno-strict-aliasing -DPY_SSIZE_T_CLEAN"
         run: |
           python3 -m pip install --user --upgrade pip
           python3 -m pip install --user .[tests] --ignore-installed
-          python3 -m pip install --user git+https://github.com/spesmilo/electrumx.git@0b260d4345242cc41e316e97d7de10ae472fd172
+          python3 -m pip install --user "e-x[leveldb] @ git+https://github.com/spesmilo/electrumx.git@280cb339aa158e099eb936033eecd15719770651"
       - name: Fetch bitcoind binary
         env:
           BITCOIND_VERSION: ${{ steps.bitcoind-version.outputs.version }}
         run: |
           mkdir -p /tmp/bitcoind
-          BITCOIND_FILENAME=monacoin-$BITCOIND_VERSION-x86_64-linux-gnu.tar.gz
+          BITCOIND_FILENAME=bitcoin-$BITCOIND_VERSION-x86_64-linux-gnu.tar.gz
           BITCOIND_PATH=/tmp/bitcoind/$BITCOIND_FILENAME
-          BITCOIND_URL=https://github.com/monacoinproject/monacoin/releases/download/monacoin-$BITCOIND_VERSION/$BITCOIND_FILENAME
+          BITCOIND_URL=https://bitcoincore.org/bin/bitcoin-core-$BITCOIND_VERSION/$BITCOIND_FILENAME
           cd /tmp/bitcoind
-          tar -xaf $BITCOIND_PATH || (rm -f /tmp/bitcoind/* && curl -L --output $BITCOIND_PATH $BITCOIND_URL && tar -xaf $BITCOIND_PATH)
-          sudo cp -a monacoin-$BITCOIND_VERSION/* /usr/
+          tar -xaf $BITCOIND_PATH || (rm -f /tmp/bitcoind/* && curl --output $BITCOIND_PATH $BITCOIND_URL && tar -xaf $BITCOIND_PATH)
+          sudo cp -a bitcoin-$BITCOIND_VERSION/* /usr/
       - name: Cache libsecp256k1 build
         id: cache-libsecp
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
@@ -83,7 +83,7 @@ jobs:
         run: |
           ./contrib/make_libsecp256k1.sh
           mkdir -p contrib/_saved_secp256k1_build
-          cp electrum_mona/libsecp256k1.so.* contrib/_saved_secp256k1_build/
+          cp electrum/libsecp256k1.so.* contrib/_saved_secp256k1_build/
       - name: Start bitcoind (regtest)
         run: nohup tests/regtest/run_bitcoind.sh > /tmp/bitcoind.log 2>&1 &
       - name: Start electrumx

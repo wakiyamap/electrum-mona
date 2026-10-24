@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from electrum_mona import lnurl
+from electrum import lnurl
 
 
 class TestLnurl(TestCase):

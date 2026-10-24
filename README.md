@@ -1,32 +1,30 @@
-# Electrum-mona - Lightweight Monacoin client
+# Electrum - Lightweight Bitcoin client
 
 ```
 Licence: MIT Licence
 Author: Thomas Voegtlin
-Port Maintainer: WakiyamaP (Electrum-mona)
 Language: Python (>= 3.10)
-Homepage: https://electrum-mona.org/
+Homepage: https://electrum.org/
 ```
 
-[![Test Status](https://github.com/wakiyamap/electrum-mona/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/wakiyamap/electrum-mona/actions/workflows/tests.yml)
-[![Build Status](https://github.com/wakiyamap/electrum-mona/actions/workflows/builds.yml/badge.svg?branch=master)](https://github.com/wakiyamap/electrum-mona/actions/workflows/builds.yml)
-[![Test coverage statistics](https://coveralls.io/repos/github/wakiyamap/electrum-mona/badge.svg?branch=master)](https://coveralls.io/github/wakiyamap/electrum-mona?branch=master)
+[![Build Status](https://github.com/spesmilo/electrum/actions/workflows/builds.yml/badge.svg?branch=master)](https://github.com/spesmilo/electrum/actions/workflows/builds.yml)
+[![Test coverage statistics](https://coveralls.io/repos/github/spesmilo/electrum/badge.svg?branch=master)](https://coveralls.io/github/spesmilo/electrum?branch=master)
+[![Help translate Electrum online](https://d322cqt584bo4o.cloudfront.net/electrum/localized.svg)](https://crowdin.com/project/electrum)
 
 
 ## Getting started
 
-_(If you've come here looking to simply run Electrum-mona,
-[you may download it here](https://electrum-mona.org/).)_
+_(If you've come here looking to simply run Electrum,
+[you may download it here](https://electrum.org/#download).)_
 
 Electrum itself is pure Python, and so are most of the required dependencies,
 but not everything. The following sections describe how to run from source, but here
 is a TL;DR:
 
 ```
-$ sudo apt-get install libsecp256k1-dev build-essential python3-dev
-$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" ELECTRUM_ECC_DONT_COMPILE=1 python3 -m pip install --user ".[gui,crypto]"
+$ sudo apt-get install libsecp256k1-dev
+$ ELECTRUM_ECC_DONT_COMPILE=1 python3 -m pip install --user ".[gui,crypto]"
 ```
-(the `CFLAGS` are needed to compile `lyra2re2_hash` correctly, see below)
 
 ### Not pure-python dependencies
 
@@ -35,6 +33,13 @@ $ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" ELECTRUM_ECC_DONT_COMPILE=1 p
 If you want to use the Qt interface, install the Qt dependencies:
 ```
 $ sudo apt-get install python3-pyqt6
+```
+
+#### QR code scanning
+
+QR code recognition uses QtMultimedia and [zxing-cpp](https://github.com/zxing-cpp/zxing-cpp/):
+```
+$ sudo apt-get install python3-pyqt6.qtmultimedia libzxing3 (or libzxing4)
 ```
 
 #### libsecp256k1
@@ -55,24 +60,6 @@ If you opt out of the compilation, you need to provide libsecp in another way, e
 $ sudo apt-get install libsecp256k1-dev
 ```
 
-#### lyra2re2_hash
-
-For the Lyra2REv2 proof-of-work of Monacoin,
-[lyra2re2_hash](https://pypi.org/project/lyra2re2-hash/)
-is a required dependency.
-
-This is a C extension that gets compiled locally when you "pip install" it,
-so you need a C compiler and the Python headers.
-Its sources must be compiled with `-fno-strict-aliasing` (recent compilers miscompile
-them otherwise, and it then returns wrong hashes), and with `-DPY_SSIZE_T_CLEAN`
-(needed for Python older than 3.13):
-```
-$ sudo apt-get install build-essential python3-dev
-$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" python3 -m pip install --user --no-binary lyra2re2_hash lyra2re2_hash
-```
-If it is already installed but was built without these flags,
-add `--force-reinstall --no-cache-dir` to rebuild it.
-
 #### cryptography
 
 Due to the need for fast symmetric ciphers,
@@ -91,23 +78,22 @@ If you would like hardware wallet support,
 ### Running from tar.gz
 
 If you downloaded the official package (tar.gz), you can run
-Electrum-mona from its root directory without installing it on your
+Electrum from its root directory without installing it on your
 system; all the pure python dependencies are included in the 'packages'
-directory (`lyra2re2_hash` is not pure python: install it as described above).
-To run Electrum from its root directory, just do:
+directory. To run Electrum from its root directory, just do:
 ```
 $ ./run_electrum
 ```
 
-You can also install Electrum-mona on your system, by running this command:
+You can also install Electrum on your system, by running this command:
 ```
 $ sudo apt-get install python3-setuptools python3-pip
-$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" python3 -m pip install --user .
+$ python3 -m pip install --user .
 ```
 
 This will download and install the Python dependencies used by
-Electrum-mona instead of using the 'packages' directory.
-It will also place an executable named `electrum-mona` in `~/.local/bin`,
+Electrum instead of using the 'packages' directory.
+It will also place an executable named `electrum` in `~/.local/bin`,
 so make sure that is on your `PATH` variable.
 
 
@@ -118,20 +104,20 @@ and [for macOS](contrib/osx/README_macos.md))_
 
 Check out the code from GitHub:
 ```
-$ git clone https://github.com/wakiyamap/electrum-mona.git
-$ cd electrum-mona
+$ git clone https://github.com/spesmilo/electrum.git
+$ cd electrum
 $ git submodule update --init
 ```
 
-Run install (this should install dependencies, including `lyra2re2_hash`, hence the `CFLAGS`):
+Run install (this should install dependencies):
 ```
-$ CFLAGS="-fno-strict-aliasing -DPY_SSIZE_T_CLEAN" python3 -m pip install --user -e .
+$ python3 -m pip install --user -e .
 ```
 
 Create translations (optional):
 ```
 $ sudo apt-get install gettext
-$ ./contrib/locale/build_locale.sh electrum_mona/locale/locale electrum_mona/locale/locale
+$ ./contrib/locale/build_locale.sh electrum/locale/locale electrum/locale/locale
 ```
 
 Finally, to start Electrum:
@@ -151,22 +137,6 @@ To run a single file, specify it directly like this:
 ```
 $ pytest tests/test_bitcoin.py -v
 ```
-
-## Verifying downloads
-
-Each release file comes with a detached GPG signature (`<file>.asc`), made with
-the key in [`pubkeys/wakiyamap.asc`](pubkeys/wakiyamap.asc)
-(fingerprint `3155 25E8 11D5 E586 F3CA  C032 9C74 0BEC 897C E499`):
-
-```
-$ gpg --import pubkeys/wakiyamap.asc
-$ gpg --verify Electrum-MONA-x.y.z.tar.gz.asc Electrum-MONA-x.y.z.tar.gz
-```
-
-`Good signature from "wakiyamap ..."` and the fingerprint above mean the file is
-the one that was released. (gpg also warns that the key is not certified with a
-trusted signature unless you have marked it as trusted; that is expected.)
-
 
 ## Creating Binaries
 
