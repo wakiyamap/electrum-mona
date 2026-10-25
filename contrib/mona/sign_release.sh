@@ -56,5 +56,6 @@ done
 echo "signed $count files in $DIR:"
 ( cd "$DIR" && for f in *; do case "$f" in *.asc|*.sig) ;; *) [ -f "$f" ] && sha256sum "$f" ;; esac; done )
 echo
-echo "to attach them to a release:"
-echo "  gh release upload <tag> \"$DIR\"/* --repo $GH_REPO"
+echo "to create a draft release with them:"
+echo "  gh release create <tag> --draft --title <tag> \"$DIR\"/* --repo $GH_REPO"
+echo "(or, to add them to an existing release: gh release upload <tag> \"$DIR\"/* --repo $GH_REPO)"
