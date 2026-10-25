@@ -61,7 +61,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: electrum-mona-windows-${{ github.sha }}
-          path: contrib/build-wine/dist/*
+          path: contrib/build-wine/dist/*.exe   # Electrum-MONA: not the unpacked pyinstaller folder
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: error
           compression-level: 0
