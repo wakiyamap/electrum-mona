@@ -26,9 +26,13 @@ if [ "$1" = "--run" ]; then
     [ ! -e "$DIR" ] || fail "$DIR already exists"
     mkdir -p "$DIR"
     gh run download "$2" --repo "$GH_REPO" --dir "$DIR/.artifacts"
-    # gh puts each artifact into its own folder: collect the files
-    find "$DIR/.artifacts" -type f -exec mv -n {} "$DIR/" \;
-    [ -z "$(find "$DIR/.artifacts" -type f)" ] || fail "two artifacts contain a file with the same name, see $DIR/.artifacts"
+    # gh puts each artifact into its own folder: collect the release files, which are
+    # the files at the top of each artifact (a build may also upload folders, e.g. the
+    # unpacked pyinstaller build of the windows binaries; those are not released)
+    for a in "$DIR"/.artifacts/*/; do
+        find "$a" -mindepth 1 -maxdepth 1 -type f -exec mv -n {} "$DIR/" \;
+        [ -z "$(find "$a" -mindepth 1 -maxdepth 1 -type f)" ] || fail "two artifacts contain a file with the same name, see $DIR/.artifacts"
+    done
     rm -r "$DIR/.artifacts"
 elif [ -d "$1" ]; then
     DIR="$1"
@@ -52,5 +56,6 @@ done
 echo "signed $count files in $DIR:"
 ( cd "$DIR" && for f in *; do case "$f" in *.asc|*.sig) ;; *) [ -f "$f" ] && sha256sum "$f" ;; esac; done )
 echo
-echo "to attach them to a release:"
-echo "  gh release upload <tag> \"$DIR\"/* --repo $GH_REPO"
+echo "to create a draft release with them:"
+echo "  gh release create <tag> --draft --title <tag> \"$DIR\"/* --repo $GH_REPO"
+echo "(or, to add them to an existing release: gh release upload <tag> \"$DIR\"/* --repo $GH_REPO)"
