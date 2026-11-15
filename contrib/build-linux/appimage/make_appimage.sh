@@ -118,7 +118,7 @@ info "preparing electrum-locale."
 (
     "$CONTRIB/locale/build_cleanlocale.sh"
     # we want the binary to have only compiled (.mo) locale files; not source (.po) files
-    rm -r "$PROJECT_ROOT/electrum/locale/locale"/*/electrum.po
+    rm -r "$PROJECT_ROOT/electrum_mona/locale/locale"/*/electrum.po
 )
 
 
@@ -161,7 +161,7 @@ info "installing electrum and its dependencies."
 
 info "desktop integration."
 cp "$PROJECT_ROOT/electrum.desktop" "$APPDIR/electrum.desktop"
-cp "$PROJECT_ROOT/electrum/gui/icons/electrum.png" "$APPDIR/electrum.png"
+cp "$PROJECT_ROOT/electrum_mona/gui/icons/electrum.png" "$APPDIR/electrum.png"
 
 
 # add launcher

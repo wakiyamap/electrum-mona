@@ -11,17 +11,17 @@ from typing import Optional, Sequence, Iterable, List, Set, Callable, TypeVar
 import aiorpcx
 from aiorpcx import RPCError
 
-from electrum import blockchain
-from electrum.util import bfh, OrderedSet
-from electrum.logging import Logger
-from electrum.transaction import Transaction, TxOutput, TxInput, TxOutpoint, PartialTxOutput
-from electrum import constants
-from electrum.bitcoin import script_to_scripthash, COIN, COINBASE_MATURITY
-from electrum.simple_config import SimpleConfig
-from electrum.synchronizer import history_status
-from electrum.wallet import Abstract_Wallet
-from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
-from electrum.fee_policy import FixedFeePolicy
+from electrum_mona import blockchain
+from electrum_mona.util import bfh, OrderedSet
+from electrum_mona.logging import Logger
+from electrum_mona.transaction import Transaction, TxOutput, TxInput, TxOutpoint, PartialTxOutput
+from electrum_mona import constants
+from electrum_mona.bitcoin import script_to_scripthash, COIN, COINBASE_MATURITY
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.synchronizer import history_status
+from electrum_mona.wallet import Abstract_Wallet
+from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum_mona.fee_policy import FixedFeePolicy
 
 from .. import restore_wallet_from_text__for_unittest
 

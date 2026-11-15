@@ -2,13 +2,13 @@ from unittest import mock
 
 from electrum_ecc import ECPrivkey
 
-from electrum import util
-from electrum.channel_db import ChannelDB, ChannelInfo
-from electrum.constants import BitcoinTestnet
-from electrum.lnmsg import encode_msg, decode_msg
-from electrum.lnutil import ShortChannelID, InvalidGossipMsg
-from electrum.simple_config import SimpleConfig
-from electrum.util import bfh
+from electrum_mona import util
+from electrum_mona.channel_db import ChannelDB, ChannelInfo
+from electrum_mona.constants import BitcoinTestnet
+from electrum_mona.lnmsg import encode_msg, decode_msg
+from electrum_mona.lnutil import ShortChannelID, InvalidGossipMsg
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.util import bfh
 
 from . import ElectrumTestCase
 

@@ -7,8 +7,8 @@ import inspect
 
 import electrum_ecc as ecc
 
-from electrum import bitcoin
-from electrum.bitcoin import (public_key_to_p2pkh, address_from_private_key,
+from electrum_mona import bitcoin
+from electrum_mona.bitcoin import (public_key_to_p2pkh, address_from_private_key,
                               is_address, is_private_key,
                               var_int, _op_push, address_to_script, OnchainOutputType, address_to_payload,
                               deserialize_privkey, serialize_privkey, is_segwit_address,
@@ -18,19 +18,19 @@ from electrum.bitcoin import (public_key_to_p2pkh, address_from_private_key,
                               opcodes, base_encode, base_decode, BitcoinException,
                               taproot_tweak_pubkey, taproot_tweak_seckey, taproot_output_script,
                               control_block_for_taproot_script_spend)
-from electrum import bip32
-from electrum import crandom
-from electrum import segwit_addr
-from electrum.segwit_addr import DecodedBech32
-from electrum.bip32 import (BIP32Node, convert_bip32_intpath_to_strpath,
+from electrum_mona import bip32
+from electrum_mona import crandom
+from electrum_mona import segwit_addr
+from electrum_mona.segwit_addr import DecodedBech32
+from electrum_mona.bip32 import (BIP32Node, convert_bip32_intpath_to_strpath,
                             xpub_from_xprv, xpub_type, is_xprv, is_bip32_derivation,
                             is_xpub, convert_bip32_strpath_to_intpath,
                             normalize_bip32_derivation, is_all_public_derivation)
-from electrum.crypto import sha256d, SUPPORTED_PW_HASH_VERSIONS
-from electrum import crypto, constants
-from electrum.util import bfh, InvalidPassword
-from electrum.storage import WalletStorage
-from electrum.keystore import xtype_from_derivation
+from electrum_mona.crypto import sha256d, SUPPORTED_PW_HASH_VERSIONS
+from electrum_mona import crypto, constants
+from electrum_mona.util import bfh, InvalidPassword
+from electrum_mona.storage import WalletStorage
+from electrum_mona.keystore import xtype_from_derivation
 
 from . import ElectrumTestCase
 from . import FAST_TESTS

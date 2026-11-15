@@ -11,14 +11,14 @@ include contrib/requirements/requirements*.txt
 include contrib/deterministic-build/requirements*.txt
 include contrib/*.sh
 
-graft electrum
+graft electrum_mona
 graft tests
 graft contrib/udev
 
-exclude electrum/*.so
-exclude electrum/*.so.0
-exclude electrum/*.dll
-exclude electrum/*.dylib
+exclude electrum_mona/*.so
+exclude electrum_mona/*.so.0
+exclude electrum_mona/*.dll
+exclude electrum_mona/*.dylib
 
 global-exclude __pycache__
 global-exclude *.py[co~]
@@ -28,4 +28,4 @@ global-exclude .git
 
 # We include both source (.po) and compiled (.mo) locale files (if present).
 # When building the "sourceonly" tar.gz, the build script explicitly deletes the compiled files.
-# exclude electrum/locale/locale/*/LC_MESSAGES/electrum.mo
+# exclude electrum_mona/locale/locale/*/LC_MESSAGES/electrum.mo

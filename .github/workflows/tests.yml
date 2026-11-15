@@ -38,7 +38,7 @@ jobs:
             --select="E9,E101,E129,E273,E274,E703,E71,E722,F5,F6,F7,F8,W191,W29,B,B909" \
             --ignore="B007,B009,B010,B036,B042,F541,F841" \
             --show-source --statistics \
-            --exclude "*_pb2.py,electrum/_vendor/"
+            --exclude "*_pb2.py,electrum_mona/_vendor/"
 
   ban-unicode:
     name: "linter: ban unicode"
@@ -97,7 +97,7 @@ jobs:
           sudo apt-get -y install automake libtool
           ./contrib/make_libsecp256k1.sh
           mkdir -p contrib/_saved_secp256k1_build
-          cp electrum/libsecp256k1.so.* contrib/_saved_secp256k1_build/
+          cp electrum_mona/libsecp256k1.so.* contrib/_saved_secp256k1_build/
       - name: Install Qt/QML runtime deps
         run: |
           sudo apt-get update
@@ -110,8 +110,8 @@ jobs:
         run: python3 --version && pip freeze --all
       - name: Run pytest with coverage
         run: |
-          coverage run --source=electrum \
-            "--omit=electrum/gui/*,electrum/plugins/*,electrum/scripts/*" \
+          coverage run --source=electrum_mona \
+            "--omit=electrum_mona/gui/*,electrum_mona/plugins/*,electrum_mona/scripts/*" \
             -m pytest tests -v
           coverage report
       - name: Upload to Coveralls
@@ -168,7 +168,7 @@ jobs:
           sudo apt-get -y install automake libtool
           ./contrib/make_libsecp256k1.sh
           mkdir -p contrib/_saved_secp256k1_build
-          cp electrum/libsecp256k1.so.* contrib/_saved_secp256k1_build/
+          cp electrum_mona/libsecp256k1.so.* contrib/_saved_secp256k1_build/
       - name: Install Qt/QML runtime deps
         run: |
           sudo apt-get update

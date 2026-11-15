@@ -20,7 +20,7 @@ except ImportError as e:
 project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 os.chdir(project_root)
 
-locale_dir = os.path.join(project_root, "electrum", "locale")
+locale_dir = os.path.join(project_root, "electrum_mona", "locale")
 if not os.path.exists(os.path.join(locale_dir, "locale")):
     raise Exception(f"missing git submodule for locale? {locale_dir}")
 
@@ -51,7 +51,7 @@ if not os.path.exists(build_dir):
     os.mkdir(build_dir)
 
 # add .py files
-files_list = glob.glob("electrum/**/*.py", recursive=True)
+files_list = glob.glob("electrum_mona/**/*.py", recursive=True)
 files_list = sorted(files_list)  # makes output deterministic across CI runs
 with open(f"{build_dir}/app.fil", "w", encoding="utf-8") as f:
     for item in files_list:
@@ -65,7 +65,7 @@ cmd = ["xgettext", "--from-code", "UTF-8", "--language", "Python", "--no-wrap", 
 subprocess.check_output(cmd)
 
 # add QML translations
-files_list = glob.glob("electrum/gui/qml/**/*.qml", recursive=True)
+files_list = glob.glob("electrum_mona/gui/qml/**/*.qml", recursive=True)
 files_list = sorted(files_list)  # makes output deterministic across CI runs
 with open(f"{build_dir}/qml.lst", "w", encoding="utf-8") as f:
     for item in files_list:
@@ -83,8 +83,8 @@ subprocess.check_output(cmd)
 
 print("Fixing some paths in messages_qml.pot")
 #  sed from " ../../gui/qml/"
-#      to   " electrum/gui/qml/"
-cmd = ["sed", "-i", r"s/ ..\/..\/gui\/qml\// electrum\/gui\/qml\//g", f"{build_dir}/messages_qml.pot"]
+#      to   " electrum_mona/gui/qml/"
+cmd = ["sed", "-i", r"s/ ..\/..\/gui\/qml\// electrum_mona\/gui\/qml\//g", f"{build_dir}/messages_qml.pot"]
 subprocess.check_output(cmd)
 
 cmd = ["msgcat", "-u", "-o", f"{build_dir}/messages.pot", f"{build_dir}/messages_gettext.pot", f"{build_dir}/messages_qml.pot"]
@@ -107,7 +107,7 @@ print('Add custom header to template')
 subprocess.check_output(cmd)
 
 # prepare uploading to crowdin
-os.chdir(os.path.join(project_root, "electrum"))
+os.chdir(os.path.join(project_root, "electrum_mona"))
 
 crowdin_api_key = None
 filename = os.path.expanduser('~/.crowdin_api_key')

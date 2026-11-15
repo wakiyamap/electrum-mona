@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 from PyQt6.QtCore import Qt
 
-from electrum import SimpleConfig
-from electrum.gui.qml.qetransactionlistmodel import QETransactionListModel
-from electrum.util import LightningHistoryItem
+from electrum_mona import SimpleConfig
+from electrum_mona.gui.qml.qetransactionlistmodel import QETransactionListModel
+from electrum_mona.util import LightningHistoryItem
 
 from .. import ElectrumTestCase, restore_wallet_from_text__for_unittest
 from .qt_util import create_qcoreapplication, delete_qobject, receive_incoming_tx
@@ -19,8 +19,8 @@ class TestQETransactionListModel(ElectrumTestCase):
         f = QETransactionListModel.get_section_by_timestamp
 
         mock_today = datetime(2023, 6, 15, 0, 0, 0, 0)  # thursday
-        with patch('electrum.gui.qml.qetransactionlistmodel.datetime') as mock_dt, \
-                patch('electrum.gui.qml.qetransactionlistmodel.QLocale') as mock_locale:
+        with patch('electrum_mona.gui.qml.qetransactionlistmodel.datetime') as mock_dt, \
+                patch('electrum_mona.gui.qml.qetransactionlistmodel.QLocale') as mock_locale:
             mock_dt.today.return_value = mock_today
             mock_dt.fromtimestamp = datetime.fromtimestamp
             mock_first_day_of_week = mock_locale.system.return_value.firstDayOfWeek

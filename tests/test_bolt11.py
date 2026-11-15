@@ -6,14 +6,14 @@ import unittest
 
 import electrum_ecc as ecc
 
-from electrum.bolt11 import (shorten_amount, unshorten_amount, BOLT11Addr, encode_bolt11_invoice,
+from electrum_mona.bolt11 import (shorten_amount, unshorten_amount, BOLT11Addr, encode_bolt11_invoice,
                              decode_bolt11_invoice, parse_fallback_addr, int_to_data5, tagged5, tagged8,
                              BOLT11DecodeException, BOLT11InvoiceException, TIMESTAMP_SANE_MAX)
-from electrum.segwit_addr import bech32_encode, bech32_decode, convertbits, CHARSET_INVERSE
-from electrum import segwit_addr
-from electrum.lnutil import UnknownEvenFeatureBits, LnFeatures, IncompatibleLightningFeatures
-from electrum import constants
-from electrum.util import bfh, ShortID
+from electrum_mona.segwit_addr import bech32_encode, bech32_decode, convertbits, CHARSET_INVERSE
+from electrum_mona import segwit_addr
+from electrum_mona.lnutil import UnknownEvenFeatureBits, LnFeatures, IncompatibleLightningFeatures
+from electrum_mona import constants
+from electrum_mona.util import bfh, ShortID
 
 from . import ElectrumTestCase
 

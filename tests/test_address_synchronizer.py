@@ -1,13 +1,13 @@
 from typing import Sequence, Tuple
 from unittest import mock
 
-from electrum import SimpleConfig
-from electrum.address_synchronizer import AddressSynchronizer, TX_HEIGHT_UNCONFIRMED
-from electrum.bitcoin import construct_witness, hash_to_segwit_addr
-from electrum.transaction import Transaction, PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint
-from electrum.util import InvalidTxSignature, TxMinedInfo
-from electrum.synchronizer import Synchronizer
-from electrum.wallet_db import WalletDB
+from electrum_mona import SimpleConfig
+from electrum_mona.address_synchronizer import AddressSynchronizer, TX_HEIGHT_UNCONFIRMED
+from electrum_mona.bitcoin import construct_witness, hash_to_segwit_addr
+from electrum_mona.transaction import Transaction, PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint
+from electrum_mona.util import InvalidTxSignature, TxMinedInfo
+from electrum_mona.synchronizer import Synchronizer
+from electrum_mona.wallet_db import WalletDB
 
 from . import ElectrumTestCase
 

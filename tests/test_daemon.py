@@ -4,15 +4,15 @@ import os
 from typing import Optional, Iterable
 from unittest import mock
 
-from electrum.commands import Commands
-from electrum.daemon import Daemon
-from electrum.simple_config import SimpleConfig
-from electrum.wallet import Abstract_Wallet
-from electrum.lnworker import LNWallet, LNPeerManager
-from electrum.lnwatcher import LNWatcher
-from electrum import util
-from electrum.utils.memory_leak import count_objects_in_memory
-from electrum import constants
+from electrum_mona.commands import Commands
+from electrum_mona.daemon import Daemon
+from electrum_mona.simple_config import SimpleConfig
+from electrum_mona.wallet import Abstract_Wallet
+from electrum_mona.lnworker import LNWallet, LNPeerManager
+from electrum_mona.lnwatcher import LNWatcher
+from electrum_mona import util
+from electrum_mona.utils.memory_leak import count_objects_in_memory
+from electrum_mona import constants
 
 from . import ElectrumTestCase, as_testnet, restore_wallet_from_text__for_unittest
 
@@ -358,7 +358,7 @@ class TestLoadWallet(DaemonTestCase):
         assert constants.net.TESTNET is False
 
         # case 1: fresh wallet created on wrong network
-        with mock.patch("electrum.constants.net", constants.BitcoinTestnet):
+        with mock.patch("electrum_mona.constants.net", constants.BitcoinTestnet):
             path = self._restore_wallet_from_text("9dk", password=None)
         with self.assertRaises(util.WalletFileException):
             wallet = self.daemon.load_wallet(path, password=None, upgrade=True)

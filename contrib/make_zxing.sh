@@ -9,7 +9,7 @@ set -e
 . "$(dirname "$0")/build_tools_util.sh"
 
 # zxing-cpp v3.1.1. Keep in sync with android/p4a_recipes/libzxing/__init__.py.
-# A major version bump also needs ZXING_MAJOR_VERSIONS in electrum/qrreader/zxing.py.
+# A major version bump also needs ZXING_MAJOR_VERSIONS in electrum_mona/qrreader/zxing.py.
 ZXING_VERSION="287c85df6f961c8efbfb5ffd736cd9457b8b890e"
 ZXING_SHA256="97d952c661b1f79d21aacc2ec544ef05c4d1465f55692cc49622ea6a8166ca7b"
 
@@ -70,7 +70,7 @@ if [ "$BUILD_TYPE" = "wine" ]; then
     cp -fv "$build_dir/libZXing.dll" "$build_dir/$library"
 fi
 host_strip "$build_dir/$library"
-cp -Lfv "$build_dir/$library" "$PROJECT_ROOT/electrum/$library"
+cp -Lfv "$build_dir/$library" "$PROJECT_ROOT/electrum_mona/$library"
 info "$library has been placed in the inner electrum folder."
 if [ -n "$DLL_TARGET_DIR" ]; then
     cp -Lfv "$build_dir/$library" "$DLL_TARGET_DIR/$library"

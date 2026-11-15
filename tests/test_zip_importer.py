@@ -5,7 +5,7 @@ import os
 import sys
 import zipfile
 
-from electrum.zip_importer import MemoryZipImporter
+from electrum_mona.zip_importer import MemoryZipImporter
 
 from . import ElectrumTestCase
 
@@ -24,7 +24,7 @@ def make_plugin_zip(path: str, *, secret: str = 'benign', name: str = PLUGIN_NAM
         }))
         z.writestr(f'{name}/__init__.py', f'SECRET = {secret!r}\n')
         z.writestr(f'{name}/cmdline.py', '\n'.join([
-            'from electrum.plugin import BasePlugin',
+            'from electrum_mona.plugin import BasePlugin',
             f'SECRET = {secret!r}',
             'class Plugin(BasePlugin):',
             '    pass',
