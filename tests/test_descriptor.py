@@ -10,7 +10,7 @@ import unittest
 
 import electrum_ecc as ecc
 
-from electrum_mona.descriptor import (
+from electrum.descriptor import (
     parse_descriptor,
     MultisigDescriptor,
     SHDescriptor,
@@ -20,7 +20,7 @@ from electrum_mona.descriptor import (
     WSHDescriptor,
     PubkeyProvider,
 )
-from electrum_mona.util import bfh
+from electrum.util import bfh
 
 from . import ElectrumTestCase, as_testnet
 

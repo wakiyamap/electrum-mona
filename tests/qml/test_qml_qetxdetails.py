@@ -1,14 +1,15 @@
 import gc
 
-from electrum_mona import SimpleConfig
-from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED
-from electrum_mona.bitcoin import address_to_script
-from electrum_mona.fee_policy import FixedFeePolicy
-from electrum_mona.gui.qml.qetxdetails import QETxDetails
-from electrum_mona.gui.qml.qewallet import QEWallet
-from electrum_mona.transaction import PartialTxOutput, Transaction
+from electrum import SimpleConfig
+from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum.bitcoin import address_to_script
+from electrum.fee_policy import FixedFeePolicy
+from electrum.gui.qml.qetxdetails import QETxDetails
+from electrum.gui.qml.qewallet import QEWallet
+from electrum.transaction import PartialTxOutput, Transaction
 
 from .. import ElectrumTestCase, restore_wallet_from_text__for_unittest
+from .qt_util import create_qcoreapplication, delete_qobject
 
 
 class TestTxDetails(ElectrumTestCase):
@@ -19,6 +20,7 @@ class TestTxDetails(ElectrumTestCase):
         super().setUpClass()
         # free the QObjects (and the wallets they hold) before other tests check for lingering wallets
         cls.addClassCleanup(gc.collect)
+        create_qcoreapplication(cls)
 
     def _create_wallet_and_unsigned_tx_with_legacy_input(self, config):
         wallet = restore_wallet_from_text__for_unittest(
@@ -43,8 +45,10 @@ class TestTxDetails(ElectrumTestCase):
         wallet, tx = self._create_wallet_and_unsigned_tx_with_legacy_input(config)
 
         qewallet = QEWallet(wallet)
+        self.addCleanup(delete_qobject, qewallet)
         self.addCleanup(qewallet.unregister_callbacks)
         txdetails = QETxDetails()
+        self.addCleanup(delete_qobject, txdetails)
         self.addCleanup(txdetails.unregister_callbacks)
         txdetails.wallet = qewallet
         txdetails.rawtx = tx.serialize()

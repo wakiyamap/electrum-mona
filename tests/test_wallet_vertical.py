@@ -6,30 +6,30 @@ from typing import Sequence
 import asyncio
 import copy
 
-from electrum_mona import bitcoin, keystore, bip32, slip39
-from electrum_mona.wallet_db import WalletDB
-from electrum_mona.storage import WalletStorage
-from electrum_mona import SimpleConfig
-from electrum_mona import util
-from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_LOCAL, TX_HEIGHT_FUTURE
-from electrum_mona.wallet import (sweep, sweep_preparations, Multisig_Wallet, Standard_Wallet, Imported_Wallet,
+from electrum import bitcoin, keystore, bip32, slip39
+from electrum.wallet_db import WalletDB
+from electrum.storage import WalletStorage
+from electrum import SimpleConfig
+from electrum import util
+from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_LOCAL, TX_HEIGHT_FUTURE
+from electrum.wallet import (sweep, sweep_preparations, Multisig_Wallet, Standard_Wallet, Imported_Wallet,
                              Abstract_Wallet, CannotBumpFee, BumpFeeStrategy,
                              TransactionPotentiallyDangerousException,
                              TransactionDangerousException,
                              TxSighashRiskLevel, CannotDoubleSpendTx)
-from electrum_mona.util import (
+from electrum.util import (
     bfh, NotEnoughFunds, UnrelatedTransactionException, UserFacingException, TxMinedInfo, InvalidTxSignature,
+    InvalidPassword,
 )
-from electrum_mona.fee_policy import FixedFeePolicy
-from electrum_mona.transaction import Transaction, PartialTxOutput, tx_from_any, Sighash
-from electrum_mona.mnemonic import calc_seed_type
-from electrum_mona.network import Network
+from electrum.fee_policy import FixedFeePolicy
+from electrum.transaction import Transaction, PartialTxOutput, tx_from_any, Sighash
+from electrum.mnemonic import calc_seed_type, is_old_seed
+from electrum.network import Network
 
-from electrum_mona.plugins.trustedcoin import trustedcoin
+from electrum.plugins.trustedcoin import trustedcoin
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest
-from .upstream_params import upstream_relay_feerate
 
 
 UNICODE_HORROR_HEX = 'e282bf20f09f988020f09f98882020202020e3818620e38191e3819fe381be20e3828fe3828b2077cda2cda2cd9d68cda16fcda2cda120ccb8cda26bccb5cd9f6eccb4cd98c7ab77ccb8cc9b73cd9820cc80cc8177cd98cda2e1b8a9ccb561d289cca1cda27420cca7cc9568cc816fccb572cd8fccb5726f7273cca120ccb6cda1cda06cc4afccb665cd9fcd9f20ccb6cd9d696ecda220cd8f74cc9568ccb7cca1cd9f6520cd9fcd9f64cc9b61cd9c72cc95cda16bcca2cca820cda168ccb465cd8f61ccb7cca2cca17274cc81cd8f20ccb4ccb7cda0c3b2ccb5ccb666ccb82075cca7cd986ec3adcc9bcd9c63cda2cd8f6fccb7cd8f64ccb8cda265cca1cd9d3fcd9e'
@@ -101,7 +101,7 @@ class WalletIntegrityHelper:
 
 def read_test_vector(filename: str):
     import os
-    from electrum_mona.util import read_json_file
+    from electrum.util import read_json_file
     path = os.path.join(os.path.dirname(__file__), filename)
     data = read_json_file(path)
     return data
@@ -180,6 +180,7 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         for seed_to_restore_from in (seed_words, seed_hex):
             with self.subTest(seed_to_restore_from=seed_to_restore_from):
                 self.assertEqual(calc_seed_type(seed_to_restore_from), 'old')
+                self.assertTrue(is_old_seed(seed_to_restore_from))
 
                 ks = keystore.from_seed(seed_to_restore_from, passphrase='', for_multisig=False)
 
@@ -196,6 +197,52 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
 
                 self.assertEqual(w.get_receiving_addresses()[0], '1FJEEB8ihPMbzs2SkLmr37dHyRFzakqUmo')
                 self.assertEqual(w.get_change_addresses()[0], '1KRW8pH6HFHZh889VDq6fEKvmrsmApwNfe')
+
+    async def test_electrum_seed_old_odd_length_hex(self):
+        """
+        "early given" is a technically invalid "old" electrum seed, which maps to 33 hex chars (ref #3149).
+        We never generated such seeds, however "old" seeds do not have a checksum, and some users
+        constructed their seed manually by hand-picking words. Not all selection of words conform to the expected rules,
+        so some hand-constructed old seeds are ~invalid, however we have grandfathered them in...
+        (The "bond decay curtain" word-triple decodes to 9 hex digits, instead of the expected 8)
+        """
+        seed_words = 'early given garden bond decay curtain companion random storm chair learn lust'
+        seed_hex = '976741d01001ab4b7a17d6ce83a1bca93'
+        self.assertEqual(calc_seed_type(seed_words), 'old')
+        self.assertTrue(is_old_seed(seed_words))
+        self.assertFalse(is_old_seed(seed_hex))  # normally the hex-seed we would also accept, but reject 33-len monsters
+
+        ks = keystore.from_seed(seed_words, passphrase='', for_multisig=False)
+
+        WalletIntegrityHelper.check_seeded_keystore_sanity(self, ks)
+        self.assertTrue(isinstance(ks, keystore.Old_KeyStore))
+
+        self.assertEqual(ks.mpk, '8ecdca16d021e997c2d01fc14d95de1ef4baf28ee2425e67646a769f45f2d8174ecf5e930b600b969dec9e0ceecc01e5cd2b7aea7d70bf2b37ee9a849f90254f')
+        self.assertEqual(ks.seed, seed_hex)
+        with self.assertRaises(UserFacingException):
+            ks.get_seed(password=None)
+
+        w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
+        self.assertEqual(w.txin_type, 'p2pkh')
+
+        self.assertEqual(w.get_receiving_addresses()[0], '1BjZwfcsFcS6NKiLTWZrSCb7AQTiNDtzgK')
+        self.assertEqual(w.get_change_addresses()[0], '14dEHoXTPk67jws7FtsVHfnhVpeonDdXRc')
+
+    async def test_electrum_seed_old_odd_length_hex_encrypted_keystore(self):
+        # keystore of the seed above, as stored by Electrum 4.2.1 with password "secret"
+        ks = keystore.Old_KeyStore({
+            'mpk': '8ecdca16d021e997c2d01fc14d95de1ef4baf28ee2425e67646a769f45f2d8174ecf5e930b600b969dec9e0ceecc01e5cd2b7aea7d70bf2b37ee9a849f90254f',
+            'pw_hash_version': 1,
+            'seed': 'oE+29vgAfW2fxsEeZywAp9nZRZ5+eiBTYwRAZwUL6F6wO1rfKRXai4b+83zupmeFqn8jCvBGJO2+WM+IkGvbfg==',
+            'seed_type': 'old',
+            'type': 'old',
+        })
+        with self.assertRaises(InvalidPassword):
+            ks.check_password(None)
+        ks.check_password('secret')
+        pk, compressed = ks.get_private_key((0, 0), 'secret')
+        self.assertEqual('p2pkh:5KT6sPpomFjbRtkgTH3p58trKTJ7NJ79mdmWzNoyWswkapLiiLH',
+                         bitcoin.serialize_privkey(pk, compressed, 'p2pkh'))
 
     async def test_electrum_seed_2fa_legacy_pre27_25words(self):
         # pre-version-2.7 2fa seed, containing 25 words
@@ -1196,7 +1243,6 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, funding_output_value - 1000000 - 5000 + 300000, 0), wallet1a.get_balance())
         self.assertEqual((0, 1000000 - 5000 - 300000, 0), wallet2.get_balance())
 
-    @upstream_relay_feerate()
     async def test_rbf(self):
         self.maxDiff = None
 
@@ -2279,7 +2325,6 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual('02000000000102bbef0182c2c746bd28517b6fd27ba9eef9c7fb5982efd27bd612cc5a28615a3a0000000000fdffffffbbef0182c2c746bd28517b6fd27ba9eef9c7fb5982efd27bd612cc5a28615a3a0100000000fdffffff02602200000000000016001413fabce9be995554a722fc4e1c5ae53ebfd58164905f010000000000160014b266f4f1b9f0bc72f090573d049df66d4efa082c0247304402205c50b9ddb1b3ead6214d7d9707c74ba29ff547880d017aae2459db156bf85b9b022041134562fffa3dccf1ac05d9b07da62a8d57dd158d25d22d1965a011325e64aa012102c72b815ba00ccb0b469cc61a0ceb843d974e630cf34abcfac178838f1974f68f02473044022049774c32b0ad046b7acdb4acc38107b6b1be57c0d167643a48cbc045850c86c202205189ed61342fc52a377c2865a879c4c2606de98eebd6bf4d73874d62329668c70121033484c8ed83c359d1c3e569accb04b77988daab9408fc82869051c10d0749ac2006fa2400', str(tx))
 
 
-    @upstream_relay_feerate()
     async def test_rbf_batching__merge_duplicate_outputs(self):
         """txos paying to the same address might be merged into a single output with a larger value"""
         wallet = self.create_standard_wallet_from_seed('response era cable net spike again observe dumb wage wonder sail tortoise',
@@ -2338,7 +2383,6 @@ class TestWalletSending(ElectrumTestCase):
         wallet.adb.receive_tx_callback(tx3, tx_height=TX_HEIGHT_UNCONFIRMED)
         self.assertEqual((0, 197_000, 0), wallet.get_balance())
 
-    @upstream_relay_feerate()
     async def test_rbf_batching__happypath_using_get_candidates_for_batching(self):
         """Test GUI simple-send RBF 'batch with' functionality:
         - while there is already an unconfirmed outgoing tx1 in the wallet history,
@@ -2821,7 +2865,6 @@ class TestWalletSending(ElectrumTestCase):
         self.assertFalse(any([wallet_frost.is_mine(txin.address) for txin in tx.inputs()]))
         self.assertFalse(any([wallet_frost.is_mine(txout.address) for txout in tx.outputs()]))
 
-    @upstream_relay_feerate()
     async def test_dscancel(self):
         self.maxDiff = None
         config = SimpleConfig({'electrum_path': self.electrum_path})

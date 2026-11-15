@@ -25,7 +25,7 @@ PY_VER_MAJOR="3.12"  # as it appears in fs paths
 PKG2APPIMAGE_COMMIT="a9c85b7e61a3a883f4a35c41c5decb5af88b6b5d"
 
 VERSION=$(git describe --tags --dirty --always)
-APPIMAGE="$DISTDIR/electrum-mona-$VERSION-x86_64.AppImage"
+APPIMAGE="$DISTDIR/electrum-$VERSION-x86_64.AppImage"
 
 rm -rf "$BUILDDIR"
 mkdir -p "$APPDIR" "$CACHEDIR" "$PIP_CACHE_DIR" "$DISTDIR" "$DLL_TARGET_DIR"
@@ -118,7 +118,7 @@ info "preparing electrum-locale."
 (
     "$CONTRIB/locale/build_cleanlocale.sh"
     # we want the binary to have only compiled (.mo) locale files; not source (.po) files
-    rm -r "$PROJECT_ROOT/electrum_mona/locale/locale"/*/electrum.po
+    rm -r "$PROJECT_ROOT/electrum/locale/locale"/*/electrum.po
 )
 
 
@@ -145,7 +145,7 @@ export PROPCACHE_NO_EXTENSIONS=1
 export ELECTRUM_ECC_DONT_COMPILE=1
 
 info "installing electrum and its dependencies."
-CFLAGS="$LYRA2RE2_HASH_CFLAGS" "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
+"$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements.txt"
 "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --only-binary PyQt6,PyQt6-Qt6,cryptography --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-binaries.txt"
@@ -160,8 +160,8 @@ CFLAGS="$LYRA2RE2_HASH_CFLAGS" "$python" -m pip install --no-build-isolation --n
 
 
 info "desktop integration."
-cp "$PROJECT_ROOT/electrum-mona.desktop" "$APPDIR/electrum-mona.desktop"
-cp "$PROJECT_ROOT/electrum_mona/gui/icons/electrum.png" "$APPDIR/electrum.png"
+cp "$PROJECT_ROOT/electrum.desktop" "$APPDIR/electrum.desktop"
+cp "$PROJECT_ROOT/electrum/gui/icons/electrum.png" "$APPDIR/electrum.png"
 
 
 # add launcher
@@ -245,6 +245,13 @@ done
 for component in Concurrent Qml Quick ; do
     rm -rf "$PYDIR"/site-packages/PyQt6/Qt${component}*
     rm -rf "$PYDIR"/site-packages/PyQt6/bindings/Qt${component}*
+done
+# Only libQt6Quick and the Qml libraries it links to are needed, not e.g. QuickControls2 or Quick3D.
+for lib in "$PYDIR"/site-packages/PyQt6/Qt6/lib/libQt6*{Qml,Quick}* ; do
+    case "$(basename "$lib")" in
+        libQt6Quick.so*|libQt6Qml.so*|libQt6QmlMeta.so*|libQt6QmlModels.so*|libQt6QmlWorkerScript.so*) ;;
+        *) rm -rf "$lib" ;;
+    esac
 done
 rm -rf "$PYDIR"/site-packages/PyQt6/Qt.so
 

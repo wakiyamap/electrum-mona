@@ -6,14 +6,14 @@ import unittest
 
 import electrum_ecc as ecc
 
-from electrum_mona.bolt11 import (shorten_amount, unshorten_amount, BOLT11Addr, encode_bolt11_invoice,
+from electrum.bolt11 import (shorten_amount, unshorten_amount, BOLT11Addr, encode_bolt11_invoice,
                              decode_bolt11_invoice, parse_fallback_addr, int_to_data5, tagged5, tagged8,
                              BOLT11DecodeException, BOLT11InvoiceException, TIMESTAMP_SANE_MAX)
-from electrum_mona.segwit_addr import bech32_encode, bech32_decode, convertbits, CHARSET_INVERSE
-from electrum_mona import segwit_addr
-from electrum_mona.lnutil import UnknownEvenFeatureBits, LnFeatures, IncompatibleLightningFeatures
-from electrum_mona import constants
-from electrum_mona.util import bfh, ShortID
+from electrum.segwit_addr import bech32_encode, bech32_decode, convertbits, CHARSET_INVERSE
+from electrum import segwit_addr
+from electrum.lnutil import UnknownEvenFeatureBits, LnFeatures, IncompatibleLightningFeatures
+from electrum import constants
+from electrum.util import bfh, ShortID
 
 from . import ElectrumTestCase
 
@@ -462,7 +462,7 @@ class TestBolt11(ElectrumTestCase):
         self.assertEqual(  # control: 'p' is allowed as long as the amount is a whole msat
             Decimal('0.00000000001'),
             decode_bolt11_invoice(self._encode_invoice_with_raw_tags(tags5, amountstr='10p')).amount)
-        for amountstr in ('105120001',  # more than the total coin supply (monacoin)
+        for amountstr in ('21000001',  # more than the total coin supply
                           '1p',        # sub-millisatoshi precision
                           '25y',       # invalid multiplier
                           '0',         # must be positive; an absent amount means "any amount"
@@ -483,7 +483,7 @@ class TestBolt11(ElectrumTestCase):
                              ("NaN", Decimal('nan')),
                              ("negative", Decimal(-1)),
                              ("zero", Decimal(0)),
-                             ("more than the coin supply", Decimal(105_120_001)),  # monacoin
+                             ("more than the coin supply", Decimal(21_000_001)),
                              ("sub-millisatoshi", Decimal('0.0000000000001'))):
             with self.subTest(label):
                 with self.assertRaises(BOLT11InvoiceException):

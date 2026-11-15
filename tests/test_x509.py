@@ -1,6 +1,6 @@
 import unittest
 
-from electrum_mona.x509 import X509
+from electrum.x509 import X509
 
 from . import ElectrumTestCase
 

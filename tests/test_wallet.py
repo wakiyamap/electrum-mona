@@ -10,20 +10,21 @@ import asyncio
 from unittest import mock
 from pathlib import Path
 
-from electrum_mona.storage import WalletStorage
-from electrum_mona.wallet_db import FINAL_SEED_VERSION
-from electrum_mona.wallet import (Abstract_Wallet, Standard_Wallet, create_new_wallet,
+from electrum.storage import WalletStorage
+from electrum.wallet_db import FINAL_SEED_VERSION
+from electrum.wallet import (Abstract_Wallet, Standard_Wallet, create_new_wallet,
                              Imported_Wallet, Wallet)
-from electrum_mona.exchange_rate import ExchangeBase, FxThread
-from electrum_mona.util import TxMinedInfo, InvalidPassword
-from electrum_mona.bitcoin import COIN
-from electrum_mona.wallet_db import WalletDB, JsonDB
-from electrum_mona.simple_config import SimpleConfig
-from electrum_mona import util, storage
-from electrum_mona.daemon import Daemon
-from electrum_mona.invoices import PR_UNPAID, PR_PAID, PR_UNCONFIRMED
-from electrum_mona.transaction import tx_from_any
-from electrum_mona.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum.exchange_rate import ExchangeBase, FxThread
+from electrum.util import TxMinedInfo, InvalidPassword
+from electrum.bitcoin import COIN
+from electrum.wallet_db import WalletDB, JsonDB
+from electrum.simple_config import SimpleConfig
+from electrum import util, storage
+from electrum.daemon import Daemon
+from electrum.invoices import PR_UNPAID, PR_PAID, PR_UNCONFIRMED
+from electrum.transaction import tx_from_any, Transaction, PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint
+from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum import bitcoin
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest
@@ -70,6 +71,12 @@ class TestWalletStorage(WalletTestCase):
         db = JsonDB(storage.read(), storage=storage)
         self.assertEqual("b", db.get("a"))
         self.assertEqual("d", db.get("c"))
+
+    def test_read_file_that_is_not_utf8(self):
+        with open(self.wallet_path, "wb") as f:
+            f.write(b"SQLite format 3\x00\xd8")
+        with self.assertRaises(util.WalletFileException):
+            WalletStorage(self.wallet_path)
 
     def test_write_dictionary_to_file(self):
 
@@ -263,14 +270,14 @@ class TestHistoryExport(ElectrumTestCase):
         self.patch_timezone.stop()
         time.tzset()
 
-    @mock.patch('electrum_mona.wallet.run_hook')
+    @mock.patch('electrum.wallet.run_hook')
     @mock.patch.object(storage.WalletStorage, 'write')
     @mock.patch.object(storage.WalletStorage, 'append')
     async def test_export_history_to_file(self, _mock_append, _mock_write, mock_run_hook):
         # prepare wallet with realistic history
         c = self.config
         c.NETWORK_OFFLINE = True
-        c.FX_EXCHANGE, c.FX_CURRENCY, c.FX_USE_EXCHANGE_RATE, c.FX_HISTORY_RATES = "CoinGecko", "EUR", True, True
+        c.FX_EXCHANGE, c.FX_CURRENCY, c.FX_USE_EXCHANGE_RATE, c.FX_HISTORY_RATES = "BitFinex", "EUR", True, True
         daemon = Daemon(config=c, listen_jsonrpc=False)
         test_wallet_name = "client_4_5_2_9dk_with_ln"  # has labels, local tx, ln tx
         wallet_path = self.get_wallet_file_path(test_wallet_name)
@@ -476,3 +483,35 @@ class TestWalletPassword(WalletTestCase):
         with self.assertRaises(InvalidPassword):
             wallet.check_password("wrong password")
         wallet.check_password("1234")
+
+
+class TestTxParents(WalletTestCase):
+
+    async def test_num_parents_with_address_reuse(self):
+        a, b, c, d, external = [bitcoin.hash160_to_p2pkh(bytes([i]) * 20) for i in range(1, 6)]
+        wallet = restore_wallet_from_text__for_unittest(f'{a} {b} {c} {d}', path=None, config=self.config)['wallet']
+        wallet.db.put('stored_height', 1000)
+
+        def add_tx(prevouts, outputs, height=TX_HEIGHT_UNCONFIRMED, txpos=None) -> str:
+            inputs = [PartialTxInput(prevout=TxOutpoint.from_str(prevout)) for prevout in prevouts]
+            outputs = [PartialTxOutput.from_address_and_value(addr, value) for addr, value in outputs]
+            tx = Transaction(PartialTransaction.from_io(inputs, outputs, BIP69_sort=False).serialize_to_network(include_sigs=False))
+            wallet.adb.receive_tx_callback(tx, tx_height=height)
+            if height > 0:
+                wallet.adb.add_verified_tx(tx.txid(), TxMinedInfo(_height=height, timestamp=0, txpos=txpos, header_hash='00' * 32))
+            return tx.txid()
+
+        f1 = add_tx(['01' * 32 + ':0'], [(a, 1000)], height=100, txpos=1)
+        f2 = add_tx(['02' * 32 + ':0'], [(a, 2000), (b, 3000)], height=100, txpos=2)
+        s1 = add_tx([f1 + ':0'], [(external, 500), (c, 400)], height=101, txpos=1)
+        s2 = add_tx([f2 + ':0'], [(external, 1900)], height=102, txpos=1)  # reuses a: f1 is an uncle
+        s3 = add_tx([f2 + ':1', s1 + ':1'], [(d, 3300)], height=102, txpos=2)
+        u1 = add_tx([s3 + ':0'], [(c, 3200)])
+        u2 = add_tx([u1 + ':0'], [(external, 3100)])  # reuses c, but unmined: no uncles
+
+        self.assertEqual(([f1], []), wallet.get_tx_parents(s1)[s1])  # s2 spent from a later
+        self.assertEqual(([f2], [f1]), wallet.get_tx_parents(s2)[s2])
+        self.assertEqual(([u1], []), wallet.get_tx_parents(u2)[u2])
+        expected = {f1: 1, f2: 1, s1: 2, s2: 3, s3: 4, u1: 5, u2: 6}
+        for txid, num_parents in expected.items():
+            self.assertEqual(num_parents, len(wallet.get_tx_parents(txid)))

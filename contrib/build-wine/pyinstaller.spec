@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT
 
 
-PYPKG="electrum_mona"
+PYPKG="electrum"
 MAIN_SCRIPT="run_electrum"
 PROJECT_ROOT = "C:/electrum"
 ICONS_FILE=f"{PROJECT_ROOT}/{PYPKG}/gui/icons/electrum.ico"

@@ -1,6 +1,5 @@
 PyQt6
 
-# we need at least cryptography>=2.1 for electrum_mona.crypto,
+# we need at least cryptography>=2.1 for electrum.crypto,
 # and at least cryptography>=2.6 for dnspython[DNSSEC]
-# cryptography<50: 50.0.0 has no wheels for macOS x86_64, where the dmg is built
-cryptography>=2.6,<50
+cryptography>=2.6

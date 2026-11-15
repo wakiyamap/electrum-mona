@@ -1,9 +1,7 @@
 name: security-review
 
 on:
-  # TODO monacoin: only manual runs for now. This needs the CLAUDE_CODE_OAUTH_TOKEN secret,
-  #                which is not set up for the Electrum-MONA repository.
-  #pull_request_target:
+  pull_request_target:
   workflow_dispatch:
     inputs:
       pr_number:
@@ -76,7 +74,7 @@ jobs:
           sudo apt-get -y install automake libtool
           ./contrib/make_libsecp256k1.sh
           mkdir -p contrib/_saved_secp256k1_build
-          cp electrum_mona/libsecp256k1.so.* contrib/_saved_secp256k1_build/
+          cp electrum/libsecp256k1.so.* contrib/_saved_secp256k1_build/
 
       - name: Install Qt/QML runtime deps
         run: |
@@ -84,9 +82,6 @@ jobs:
           sudo apt-get -y install libgl1 libegl1 libxkbcommon0 libdbus-1-3
 
       - name: Install Python dependencies
-        env:
-          # needed to compile lyra2re2_hash correctly, see README.md
-          CFLAGS: "-fno-strict-aliasing -DPY_SSIZE_T_CLEAN"
         run: |
           pip install -r contrib/requirements/requirements-ci.txt
           pip install ".[tests,qml_gui]"

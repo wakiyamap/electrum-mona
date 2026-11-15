@@ -8,8 +8,7 @@
 
 pip
 setuptools
-# wheel<0.46: python-for-android patches wheel._setuptools_logging, which 0.46 removed
-wheel<0.46
+wheel
 
 # importlib_metadata also needs:
 # https://github.com/python/importlib_metadata/blob/1e2381fe101fd70742a0171e51c1be82aedf519b/pyproject.toml#L2
@@ -29,8 +28,3 @@ flit_core>=3.4,<4
 # aio-libs/frozenlist and aio-libs/propcache needs:
 # https://github.com/aio-libs/frozenlist/blob/c28f32d6816ca0fa56a5876e84831c46084bb85d/pyproject.toml#L6
 expandvars
-
-# urllib3 (requirements-hw.txt) also needs:
-# https://github.com/urllib3/urllib3/blob/2.8.0/pyproject.toml#L2
-hatchling
-hatch-vcs

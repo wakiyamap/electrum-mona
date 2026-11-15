@@ -9,8 +9,8 @@ if TYPE_CHECKING:
     from PyInstaller.building.build_main import Analysis, PYZ, EXE, BUNDLE
 
 
-PACKAGE_NAME='Electrum-MONA.app'
-PYPKG='electrum_mona'
+PACKAGE_NAME='Electrum.app'
+PYPKG='electrum'
 MAIN_SCRIPT='run_electrum'
 PROJECT_ROOT = os.path.abspath(".")
 ICONS_FILE=f"{PROJECT_ROOT}/{PYPKG}/gui/icons/electrum.icns"
@@ -135,8 +135,8 @@ app = BUNDLE(
         'NSSupportsAutomaticGraphicsSwitching': 'True',
         'CFBundleURLTypes':
             [{
-                'CFBundleURLName': 'monacoin',
-                'CFBundleURLSchemes': ['monacoin', 'lightning', 'lnurlp', 'lnurlw', ],
+                'CFBundleURLName': 'bitcoin',
+                'CFBundleURLSchemes': ['bitcoin', 'lightning', 'lnurlp', 'lnurlw', ],
             }],
         'LSMinimumSystemVersion': '11',
         'NSCameraUsageDescription': 'Electrum would like to access the camera to scan for QR codes',
