@@ -27,6 +27,7 @@
 #   - Multisig_Wallet: several HD keystores, M-of-N OP_CHECKMULTISIG scripts
 
 import os
+import bisect
 import random
 import time
 import copy
@@ -435,7 +436,6 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             self.adb.add_address(addr)
         self.lock = self.adb.lock
         self._last_full_history = None
-        self._tx_parents_cache = {}
         self._paid_invoice_keys_cache = set()  # type: Set[str]
         self._coin_price_cache = {}
         self._default_labels = {}
@@ -641,7 +641,6 @@ class Abstract_Wallet(ABC, Logger, EventListener):
 
     def clear_tx_parents_cache(self):
         with self.lock:
-            self._tx_parents_cache.clear()
             self._num_parents.clear()
             self._last_full_history = None
 
@@ -784,29 +783,31 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def is_deterministic(self) -> bool:
         return self.keystore.is_deterministic()
 
-    def _set_label(self, key: str, value: Optional[str]) -> None:
+    def _normalize_label(self, text):
+        return text.replace("\n", " ") if text else None
+
+    def _set_label(self, key: str, value: Optional[str]) -> bool:
+        """update label without triggering set_label hook"""
+        changed = False
+        if not key:
+            return False
+        value = self._normalize_label(value)
         with self.lock:
+            old = self._labels.get(key)
             if value is None:
-                self._labels.pop(key, None)
-            else:
+                if old is not None:
+                    self._labels.pop(key, None)
+                    changed = True
+            elif value != old:
                 self._labels[key] = value
+                changed = True
+        if changed:
+            util.trigger_callback('label_changed', self, key, value)
+        return changed
 
     def set_label(self, name: str, text: str | None = None) -> bool:
-        if not name:
-            return False
-        changed = False
-        with self.lock:
-            old_text = self._labels.get(name)
-            if text:
-                text = text.replace("\n", " ")
-                if old_text != text:
-                    self._labels[name] = text
-                    changed = True
-            else:
-                if old_text is not None:
-                    self._labels.pop(name)
-                    changed = True
-        if changed:
+        text = self._normalize_label(text)
+        if changed := self._set_label(name, text):
             run_hook('set_label', self, name, text)
         return changed
 
@@ -1091,51 +1092,55 @@ class Abstract_Wallet(ABC, Logger, EventListener):
 
     def get_tx_parents(self, txid: str) -> Dict[str, Tuple[List[str], List[str]]]:
         """
-        returns a flat dict:
-        txid -> list of parent txids
+        returns a flat dict, for txid and its ancestors in the wallet history:
+        txid -> (list of parent txids, list of uncle txids)
+        uncles are the txs that funded other coins of an input address,
+        if those coins were spent by a mined tx before txid (address reuse)
         """
+
+        def _get_spent_coins(addr_: str) -> Tuple[List[Tuple[int, int]], List[str]]:
+            """Returns the coins of addr that were spent by a mined tx, in the order they were spent:
+            the (height, txpos) of the spending txs, and the txids that funded the coins.
+            """
+            received, sent = self.adb.get_addr_io(addr_)
+            spends = sorted(
+                ((height, txpos), prevout_str.split(':')[0])
+                for prevout_str, (spending_txid, height, txpos) in sent.items()
+                if height > 0
+            )
+            return [key_ for key_, _ in spends], [txid_ for _, txid_ in spends]
+
         with self.lock:
             if self._last_full_history is None:
                 self._last_full_history = self.get_onchain_history()
-                # populate cache in chronological order (confirmed tx only)
-                # todo: get_full_history should return unconfirmed tx topologically sorted
-                for _txid, tx_item in self._last_full_history.items():
-                    if tx_item.tx_mined_status.height() > 0:
-                        self.get_tx_parents(_txid)
-
-            result = self._tx_parents_cache.get(txid, None)
-            if result is not None:
-                return result
-            result = {}   # type: Dict[str, Tuple[List[str], List[str]]]
-            parents = []  # type: List[str]
-            uncles = []   # type: List[str]
-            tx = self.adb.get_transaction(txid)
-            assert tx, f"cannot find {txid} in db"
-            for i, txin in enumerate(tx.inputs()):
-                _txid = txin.prevout.txid.hex()
-                parents.append(_txid)
-                # detect address reuse
-                addr = self.adb.get_txin_address(txin)
-                if addr is None:
+            result = {}  # type: Dict[str, Tuple[List[str], List[str]]]
+            spent_coins = {}  # addr -> _get_spent_coins(addr)
+            num_uncles = defaultdict(int)  # addr -> number of funding txs of spent_coins[addr] added to todo
+            todo = [txid]
+            while todo:
+                _txid = todo.pop()
+                if _txid in result:
                     continue
-                received, sent = self.adb.get_addr_io(addr)
-                if len(sent) > 1:
-                    my_txid, my_height, my_pos = sent[txin.prevout.to_str()]
-                    assert my_txid == txid
-                    for k, v in sent.items():
-                        if k != txin.prevout.to_str():
-                            reuse_txid, reuse_height, reuse_pos = v
-                            if reuse_height <= 0:  # exclude not-yet-mined (we need topological ordering)
-                                continue
-                            if (reuse_height, reuse_pos) < (my_height, my_pos):
-                                uncle_txid, uncle_index = k.split(':')
-                                uncles.append(uncle_txid)
-
-            for _txid in parents + uncles:
-                if _txid in self._last_full_history.keys():
-                    result.update(self.get_tx_parents(_txid))
-            result[txid] = parents, uncles
-            self._tx_parents_cache[txid] = result
+                tx = self.db.get_transaction(_txid)
+                assert tx, f"cannot find {_txid} in db"
+                tx_mined_info = self.adb.get_tx_height(_txid)
+                key = tx_mined_info.height(), tx_mined_info.txpos if tx_mined_info.txpos is not None else -1
+                parents = [txin.prevout.txid.hex() for txin in tx.inputs()]
+                uncles = []  # type: List[str]
+                for txin in tx.inputs():
+                    addr = self.adb.get_txin_address(txin)
+                    if addr is None:
+                        continue
+                    if addr not in spent_coins:
+                        spent_coins[addr] = _get_spent_coins(addr)
+                    keys, funding_txids = spent_coins[addr]
+                    n = bisect.bisect_left(keys, key)  # number of coins spent before _txid (0 if unmined)
+                    uncles += funding_txids[:n]
+                    # the uncles of earlier spends from addr are a prefix of these, add them to todo only once
+                    todo.extend(x for x in funding_txids[num_uncles[addr]:n] if x in self._last_full_history)
+                    num_uncles[addr] = max(num_uncles[addr], n)
+                result[_txid] = parents, uncles
+                todo.extend(x for x in parents if x in self._last_full_history and x not in result)
             return result
 
     def get_balance(self, **kwargs):
@@ -1741,7 +1746,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def get_label_for_address(self, addr: str) -> str:
         label = self._labels.get(addr) or ''
         if not label and (request := self.get_request_by_addr(addr)):
-            label = request.get_message()
+            label = request.get_message() or ''
         return label
 
     def set_default_label(self, key: str, value: str):
@@ -1794,6 +1799,18 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         #if not labels and self.lnworker and (label:= self.lnworker.get_label_for_txid(tx_hash)):
         #    labels.append(label)
         return ', '.join(labels)
+
+    def get_txids_with_label_derived_from(self, key: str) -> Set[str]:
+        """Returns the txids whose default label (see _get_default_label_for_txid)
+        can depend on the label of key, where key is an address or an outpoint.
+        """
+        if is_address(key):
+            return set(self.adb.get_address_history(key).keys())
+        if ':' in key:
+            txid, n = key.split(':', 1)
+            spender = self.db.get_spent_outpoint(txid, n)
+            return {txid, spender} if spender else {txid}
+        return set()
 
     def _get_default_label_for_rhash(self, rhash: str) -> str:
         req = self.get_request(rhash)
@@ -4634,7 +4651,7 @@ class Wallet(object):
             return Multisig_Wallet
         if wallet_type in wallet_constructors:
             return wallet_constructors[wallet_type]
-        raise WalletFileException("Unknown wallet type: " + str(wallet_type))
+        raise WalletFileException(_("Unknown wallet type: {}").format(wallet_type))
 
 
 def create_new_wallet(
